@@ -18,7 +18,24 @@ class BERT(nn.Module):
 
 
 class GPT1(nn.Module):
-    def __init__(self):
+    def __init__(self, device=None, dtype=None):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=768,
+            nhead=12,
+            dim_feedforward=3072,
+            dropout=0.1,
+            activation=nn.gelu,
+            layer_norm_eps=1e-05,
+            batch_first=True,
+            norm_first=False,
+            **config,
+        )
+        self.model = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=12)
+        self.embedding = nn.Embedding()
+
+    def forward(self, input):
         pass
 
 
