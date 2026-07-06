@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.pt
+*.ckpt
+*.pth
+data/
+checkpoints/
+wandb/
+.DS_Store
+.vscode/
+CLAUDE.md
+.claude/
