@@ -1,10 +1,6 @@
+import copy
 import torch
 import torch.nn as nn
-
-
-class CausalTransformerEncoderLayer(nn.TransformerEncoderLayer):
-    def forward(self, input):
-        return super().forward(input, is_causal=True)
 
 
 class Transfomer(nn.Module):
@@ -27,6 +23,8 @@ class GPT1(nn.Module):
     CONTEXT_WINDOW = 4096
     MODEL_DIM = 768
     NUM_HEAD = 12
+    DIM_FEEDFORWARD = 3072
+    NUM_LAYER = 12
 
     def __init__(self, device=None, dtype=None):
         super().__init__()
@@ -37,10 +35,10 @@ class GPT1(nn.Module):
         self.position_embedding = nn.Parameter(
             torch.empty(self.CONTEXT_WINDOW, self.MODEL_DIM, **config)
         )
-        encoder_layer = CausalTransformerEncoderLayer(
+        encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.MODEL_DIM,
             nhead=self.NUM_HEAD,
-            dim_feedforward=3072,
+            dim_feedforward=self.DIM_FEEDFORWARD,
             dropout=0.1,
             activation=nn.functional.gelu,
             layer_norm_eps=1e-05,
@@ -48,17 +46,21 @@ class GPT1(nn.Module):
             norm_first=False,
             **config,
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=12)
+        self.encoder = nn.ModuleList(
+            [copy.deepcopy(encoder_layer) for _ in range(self.NUM_LAYER)]
+        )
         self.reset_parameters()
 
     def forward(self, input):
         length = input.size(-1)
         out = self.embedding(input) + self.position_embedding[:length, :]
-        out = self.encoder(out)
+        mask = nn.Transformer.generate_square_subsequent_mask(length, device=out.device)
+        for encoder_layer in self.encoder:
+            out = encoder_layer(out, src_mask=mask, is_causal=True)
         return out
 
     def reset_parameters(self):
-        nn.init.normal_(self.position_embedding, std=0.2)
+        nn.init.normal_(self.position_embedding, std=0.02)
 
 
 class GPT2(nn.Module):
