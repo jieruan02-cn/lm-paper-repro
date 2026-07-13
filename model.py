@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 
 
-class Transfomer(nn.Module):
+class Transformer(nn.Module):
     def __init__(self):
         pass
 
@@ -37,28 +37,36 @@ class GPT1(nn.Module):
             torch.empty(self.CONTEXT_WINDOW, self.MODEL_DIM, **config)
         )
         self.dropout = nn.Dropout(p=0.1)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.MODEL_DIM,
-            nhead=self.NUM_HEAD,
-            dim_feedforward=self.DIM_FEEDFORWARD,
-            dropout=0.1,
-            activation=nn.functional.gelu,
-            layer_norm_eps=1e-05,
-            batch_first=True,
-            norm_first=False,
-            **config,
-        )
         self.encoder = nn.TransformerEncoder(
-            encoder_layer=encoder_layer, num_layers=self.NUM_LAYER
+            encoder_layer=nn.TransformerEncoderLayer(
+                d_model=self.MODEL_DIM,
+                nhead=self.NUM_HEAD,
+                dim_feedforward=self.DIM_FEEDFORWARD,
+                dropout=0.1,
+                activation=nn.functional.gelu,
+                layer_norm_eps=1e-05,
+                batch_first=True,
+                norm_first=False,
+                **config,
+            ),
+            num_layers=self.NUM_LAYER,
         )
+        self.register_buffer(
+            "mask",
+            nn.Transformer.generate_square_subsequent_mask(
+                self.CONTEXT_WINDOW, device=device
+            ),
+            persistent=False,
+        )
+
         self.reset_parameters()
 
     def forward(self, input):
         length = input.size(-1)
+        assert length <= self.CONTEXT_WINDOW
         out = self.embedding(input) + self.position_embedding[:length, :]
         out = self.dropout(out)
-        mask = nn.Transformer.generate_square_subsequent_mask(length, device=out.device)
-        out = self.encoder(out, mask=mask, is_causal=True)
+        out = self.encoder(out, mask=self.mask[:length, :length], is_causal=True)
         out = out @ self.embedding.weight.T
         return out
 
@@ -67,10 +75,13 @@ class GPT1(nn.Module):
         for module in self.modules():
             if isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, std=0.02)
-            if isinstance(module, nn.Linear):
+            elif isinstance(module, nn.Linear):
                 nn.init.normal_(module.weight, std=0.02)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.MultiheadAttention):
+                nn.init.normal_(module.in_proj_weight, std=0.02)
+                nn.init.zeros_(module.in_proj_bias)
 
 
 class GPT2(nn.Module):
