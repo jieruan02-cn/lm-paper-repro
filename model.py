@@ -19,8 +19,9 @@ class BERT(nn.Module):
 
 
 class GPT1(nn.Module):
-    VOCAB_SIZE = 4096
-    CONTEXT_WINDOW = 4096
+    # BPE with 40000 merges
+    VOCAB_SIZE = 40478
+    CONTEXT_WINDOW = 512
     MODEL_DIM = 768
     NUM_HEAD = 12
     DIM_FEEDFORWARD = 3072
@@ -30,11 +31,12 @@ class GPT1(nn.Module):
         super().__init__()
         config = {"device": device, "dtype": dtype}
         self.embedding = nn.Embedding(
-            num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM
+            num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
         )
         self.position_embedding = nn.Parameter(
             torch.empty(self.CONTEXT_WINDOW, self.MODEL_DIM, **config)
         )
+        self.dropout = nn.Dropout(p=0.1)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.MODEL_DIM,
             nhead=self.NUM_HEAD,
@@ -46,21 +48,29 @@ class GPT1(nn.Module):
             norm_first=False,
             **config,
         )
-        self.encoder = nn.ModuleList(
-            [copy.deepcopy(encoder_layer) for _ in range(self.NUM_LAYER)]
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer=encoder_layer, num_layers=self.NUM_LAYER
         )
         self.reset_parameters()
 
     def forward(self, input):
         length = input.size(-1)
         out = self.embedding(input) + self.position_embedding[:length, :]
+        out = self.dropout(out)
         mask = nn.Transformer.generate_square_subsequent_mask(length, device=out.device)
-        for encoder_layer in self.encoder:
-            out = encoder_layer(out, src_mask=mask, is_causal=True)
+        out = self.encoder(out, mask=mask, is_causal=True)
+        out = out @ self.embedding.weight.T
         return out
 
     def reset_parameters(self):
         nn.init.normal_(self.position_embedding, std=0.02)
+        for module in self.modules():
+            if isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, std=0.02)
+            if isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, std=0.02)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
 
 class GPT2(nn.Module):
