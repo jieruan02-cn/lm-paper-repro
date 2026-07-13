@@ -23,9 +23,9 @@ class GPT1(nn.Module):
     VOCAB_SIZE = 40478
     CONTEXT_WINDOW = 512
     MODEL_DIM = 768
-    NUM_HEAD = 12
+    NUM_HEADS = 12
     DIM_FEEDFORWARD = 3072
-    NUM_LAYER = 12
+    NUM_LAYERS = 12
 
     def __init__(self, device=None, dtype=None):
         super().__init__()
@@ -40,7 +40,7 @@ class GPT1(nn.Module):
         self.encoder = nn.TransformerEncoder(
             encoder_layer=nn.TransformerEncoderLayer(
                 d_model=self.MODEL_DIM,
-                nhead=self.NUM_HEAD,
+                nhead=self.NUM_HEADS,
                 dim_feedforward=self.DIM_FEEDFORWARD,
                 dropout=0.1,
                 activation=nn.functional.gelu,
@@ -49,7 +49,7 @@ class GPT1(nn.Module):
                 norm_first=False,
                 **config,
             ),
-            num_layers=self.NUM_LAYER,
+            num_layers=self.NUM_LAYERS,
         )
         self.register_buffer(
             "mask",
@@ -64,8 +64,7 @@ class GPT1(nn.Module):
     def forward(self, input):
         length = input.size(-1)
         assert length <= self.CONTEXT_WINDOW
-        out = self.embedding(input) + self.position_embedding[:length, :]
-        out = self.dropout(out)
+        out = self.dropout(self.embedding(input) + self.position_embedding[:length, :])
         out = self.encoder(out, mask=self.mask[:length, :length], is_causal=True)
         out = out @ self.embedding.weight.T
         return out
@@ -85,8 +84,54 @@ class GPT1(nn.Module):
 
 
 class GPT2(nn.Module):
-    def __init__(self):
-        pass
+    VOCAB_SIZE = 50257
+    CONTEXT_WINDOW = 1024
+    MODEL_DIM = 768
+    NUM_HEADS = 12
+    DIM_FEEDFORWARD = 3072
+    NUM_LAYERS = 12
+
+    def __init__(self, device=None, dtype=None):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.embedding = nn.Embedding(
+            num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
+        )
+        self.position_embedding = nn.Parameter(
+            torch.empty(self.CONTEXT_WINDOW, self.MODEL_DIM, **config)
+        )
+        self.dropout = nn.Dropout(p=0.1)
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer=nn.TransformerEncoderLayer(
+                dmodel=self.MODEL_DIM,
+                nhead=self.NUM_HEADS,
+                dim_feedforward=self.DIM_FEEDFORWARD,
+                dropout=0.1,
+                activation=nn.functional.gelu,
+                batch_first=True,
+                norm_first=True,
+                **config,
+            ),
+            num_layers=self.NUM_LAYERS,
+        )
+        self.register_buffer(
+            "mask",
+            nn.Transformer.generate_square_subsequent_mask(
+                self.CONTEXT_WINDOW, device=device
+            ),
+            persistent=False,
+        )
+
+    def forward(self, input):
+        length = input.size(-1)
+        assert length <= self.CONTEXT_WINDOW
+        out = self.dropout(self.embedding(input) + self.position_embedding[:length, :])
+        out = self.encoder(out, mask=self.mask[:length, :length], is_causal=True)
+        out = out @ self.embedding.weight.T
+        return out
+
+    def reset_parameters(self):
+        nn.init.normal_(self.position_embedding, std=0.02)
 
 
 class GPT3(nn.Module):
