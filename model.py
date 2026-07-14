@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 
@@ -102,17 +103,19 @@ class GPT2(nn.Module):
         self.dropout = nn.Dropout(p=0.1)
         self.encoder = nn.TransformerEncoder(
             encoder_layer=nn.TransformerEncoderLayer(
-                dmodel=self.MODEL_DIM,
+                d_model=self.MODEL_DIM,
                 nhead=self.NUM_HEADS,
                 dim_feedforward=self.DIM_FEEDFORWARD,
                 dropout=0.1,
                 activation=nn.functional.gelu,
+                layer_norm_eps=1e-05,
                 batch_first=True,
                 norm_first=True,
                 **config,
             ),
             num_layers=self.NUM_LAYERS,
         )
+        self.layer_norm = nn.LayerNorm(self.MODEL_DIM, eps=1e-05, bias=True, **config)
         self.register_buffer(
             "mask",
             nn.Transformer.generate_square_subsequent_mask(
@@ -120,17 +123,34 @@ class GPT2(nn.Module):
             ),
             persistent=False,
         )
+        self.reset_parameters()
 
     def forward(self, input):
         length = input.size(-1)
         assert length <= self.CONTEXT_WINDOW
         out = self.dropout(self.embedding(input) + self.position_embedding[:length, :])
         out = self.encoder(out, mask=self.mask[:length, :length], is_causal=True)
+        out = self.layer_norm(out)
         out = out @ self.embedding.weight.T
         return out
 
     def reset_parameters(self):
         nn.init.normal_(self.position_embedding, std=0.02)
+        for module in self.modules():
+            if isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, std=0.02)
+            elif isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, std=0.02)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.MultiheadAttention):
+                nn.init.normal_(module.in_proj_weight, std=0.02)
+                nn.init.zeros_(module.in_proj_bias)
+
+        residual_layer_scaler = 1.0 / math.sqrt(self.NUM_LAYERS * 2)
+        for name, param in self.encoder.named_parameters():
+            if name.endswith("out_proj.weight") or name.endswith("linear2.weight"):
+                nn.init.normal_(param, std=0.02 * residual_layer_scaler)
 
 
 class GPT3(nn.Module):
