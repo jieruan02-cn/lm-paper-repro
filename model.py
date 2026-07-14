@@ -154,7 +154,26 @@ class GPT2(nn.Module):
 
 
 class GPT3(nn.Module):
-    def __init__(self):
+    VOCAB_SIZE = 0
+    MODEL_DIM = 0
+    CONTEXT_WINDOW = 0
+
+    def __init__(self, device=None, dtype=None):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.embedding = nn.Embedding(
+            num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
+        )
+        self.position_embedding = nn.Parameter(
+            torch.empty(self.CONTEXT_WINDOW, self.MODEL_DIM, **config)
+        )
+        self.dropout = nn.Dropout(p=0.1)
+        self.encoder = nn.ModuleList
+
+    def forward(self, input):
+        pass
+
+    def reset_parameters(self):
         pass
 
 
