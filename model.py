@@ -211,8 +211,9 @@ class GPT3(nn.Module):
         assert length <= self.CONTEXT_WINDOW
         out = self.dropout(self.embedding(input) + self.position_embedding[:length, :])
         for i, layer in enumerate(self.encoder):
-            mask = self.dense_mask if i % 2 == 0 else self.sparse_mask
-            out = layer(out, src_mask=mask[:length, :length])
+            is_dense = i % 2 == 0
+            mask = self.dense_mask if is_dense else self.sparse_mask
+            out = layer(out, src_mask=mask[:length, :length], is_causal=is_dense)
         out = self.layer_norm(out)
         out = out @ self.embedding.weight.T
         return out
