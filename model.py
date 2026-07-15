@@ -239,6 +239,12 @@ class GPT3(nn.Module):
 
 class LLaMA1(nn.Module):
     def __init__(self):
+        super().__init__()
+
+    def forward(self, input):
+        pass
+
+    def reset_parameters(self):
         pass
 
 
