@@ -4,6 +4,14 @@ import torch
 import torch.nn as nn
 
 
+class SwishGLU(nn.Module):
+    def __init__(self):
+        pass
+
+    def forward(self, input):
+        pass
+
+
 class RMSTransformerEncoderLayer(nn.Module):
     def __init__(
         self,
@@ -13,16 +21,42 @@ class RMSTransformerEncoderLayer(nn.Module):
         dropout=0.1,
         activation=nn.functional.relu,
         rms_norm_eps=1e-05,
-        batch_first=False,
-        norm_first=False,
+        batch_first=True,
+        norm_first=True,
         bias=True,
         device=None,
         dtype=None,
     ):
         super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.norm_first = norm_first
+        self.rms_norm1 = nn.RMSNorm(d_model, rms_norm_eps, **config)
+        self.multi_head_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=nhead,
+            dropout=dropout,
+            bias=bias,
+            batch_first=batch_first,
+            **config,
+        )
+        self.dropout = nn.Dropout(p=dropout)
+
+        self.rms_norm2 = nn.RMSNorm(d_model, rms_norm_eps, **config)
+        self.ffn = nn.Sequential(
+            nn.Linear(),
+            SwishGLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(),
+            nn.Dropout(p=dropout),
+        )
 
     def forward(self, src, src_mask=None, is_causal=False):
-        pass
+        if self.norm_first:
+            mha_input = self.rms_norm1(src)
+            mha_out, _ = self.multi_head_attn()
+
+        else:
+            pass
 
 
 class T5(nn.Module):
