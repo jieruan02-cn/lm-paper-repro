@@ -4,8 +4,24 @@ import torch
 import torch.nn as nn
 
 
-class Transformer(nn.Module):
-    def __init__(self):
+class RMSTransformerEncoderLayer(nn.Module):
+    def __init__(
+        self,
+        d_model,
+        nhead,
+        dim_feedforward=2048,
+        dropout=0.1,
+        activation=nn.functional.relu,
+        rms_norm_eps=1e-05,
+        batch_first=False,
+        norm_first=False,
+        bias=True,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+
+    def forward(self, src, src_mask=None, is_causal=False):
         pass
 
 
@@ -238,6 +254,13 @@ class GPT3(nn.Module):
 
 
 class LLaMA1(nn.Module):
+    VOCAB_SIZE = 0
+    CONTEXT_WINDOW = 0
+    MODEL_DIM = 8192
+    NUM_HEADS = 64
+    DIM_FEEDFORWARD = 4 * MODEL_DIM
+    NUM_LAYERS = 80
+
     def __init__(self):
         super().__init__()
 
