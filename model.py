@@ -21,29 +21,82 @@ class SwishGLU(nn.Module):
 
 
 class RoPE(nn.Module):
-    def __init__(self):
-        pass
+    def __init__(self, head_dim, context_window, device=None, dtype=None):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.register_buffer(
+            "theta",
+            torch.pow(10000.0, torch.arange(0, -head_dim, -2, **config) / head_dim),
+            persistent=False,
+        )
+        self.register_buffer(
+            "theta_cos", self.theta.repeat_interleave(2), persistent=False
+        )
+        self.register_buffer(
+            "theta_sin",
+            torch.stack((-self.theta, self.theta), dim=1).flatten(),
+            persistent=False,
+        )
+        self.register_buffer(
+            "context_vec", torch.arange(context_window, **config), persistent=False
+        )
+        self.register_buffer(
+            "cos_mat",
+            torch.cos(torch.outer(self.context_vec, self.theta_cos)),
+            persistent=False,
+        )
+        self.register_buffer(
+            "sin_mat",
+            torch.sin(torch.outer(self.context_vec, self.theta_sin)),
+            persistent=False,
+        )
+        self.register_buffer(
+            "sin_index",
+            torch.stack(
+                (
+                    torch.arange(1, head_dim, 2, device=device),
+                    torch.arange(0, head_dim, 2, device=device),
+                ),
+                dim=1,
+            ).flatten(),
+            persistent=False,
+        )
+        self.context_window = context_window
 
     def forward(self, input):
-        pass
+        length = input.size(-2)
+        assert length <= self.context_window
+        out = (
+            input * self.cos_mat[:length, :]
+            + input.index_select(dim=-1, index=self.sin_index)
+            * self.sin_mat[:length, :]
+        )
+        return out
 
 
 class RoPEMultiheadAttention(nn.Module):
     def __init__(
-        self, embed_dim, num_heads, dropout=0.0, bias=True, device=None, dtype=None
+        self,
+        embed_dim,
+        num_heads,
+        context_window,
+        dropout=0.0,
+        bias=True,
+        device=None,
+        dtype=None,
     ):
         super().__init__()
-        config = {"device": device, "dtype": dtype}
-        self.in_proj_query = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
-        self.in_proj_key = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
-        self.in_proj_value = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
-        self.rope = RoPE()
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
-
         self.dropout = dropout
         self.num_heads = num_heads
         assert embed_dim % num_heads == 0
         self.head_dim = embed_dim // num_heads
+
+        config = {"device": device, "dtype": dtype}
+        self.in_proj_query = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
+        self.in_proj_key = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
+        self.in_proj_value = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
+        self.rope = RoPE(self.head_dim, context_window, **config)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
 
     def forward(self, query, key, value, attn_mask=None, is_causal=False):
         query = self.in_proj_query(query)
@@ -74,6 +127,7 @@ class RMSTransformerEncoderLayer(nn.Module):
         self,
         d_model,
         nhead,
+        context_window,
         dim_feedforward=2048,
         dropout=0.1,
         activation=SwishGLU,
@@ -88,7 +142,12 @@ class RMSTransformerEncoderLayer(nn.Module):
         self.norm_first = norm_first
         self.rms_norm1 = nn.RMSNorm(d_model, eps=rms_norm_eps, **config)
         self.multi_head_attn = RoPEMultiheadAttention(
-            embed_dim=d_model, num_heads=nhead, dropout=dropout, bias=bias, **config
+            embed_dim=d_model,
+            num_heads=nhead,
+            context_window=context_window,
+            dropout=dropout,
+            bias=bias,
+            **config,
         )
         self.dropout = nn.Dropout(p=dropout)
 
@@ -376,6 +435,7 @@ class LLaMA1(nn.Module):
         encoder_layer = RMSTransformerEncoderLayer(
             d_model=self.MODEL_DIM,
             nhead=self.NUM_HEADS,
+            context_window=self.CONTEXT_WINDOW,
             dim_feedforward=self.DIM_FEEDFORWARD,
             dropout=0.0,
             activation=SwishGLU,
