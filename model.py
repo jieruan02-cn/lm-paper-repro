@@ -2,7 +2,7 @@ import copy
 import math
 import torch
 import torch.nn as nn
-import collections.OrderedDict as OrderedDict
+from collections import OrderedDict
 
 
 class SwishGLU(nn.Module):
@@ -32,10 +32,41 @@ class RoPEMultiheadAttention(nn.Module):
     def __init__(
         self, embed_dim, num_heads, dropout=0.0, bias=True, device=None, dtype=None
     ):
-        pass
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.in_proj_query = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
+        self.in_proj_key = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
+        self.in_proj_value = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
+        self.rope = RoPE()
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
+
+        self.dropout = dropout
+        self.num_heads = num_heads
+        assert embed_dim % num_heads == 0
+        self.head_dim = embed_dim // num_heads
 
     def forward(self, query, key, value, attn_mask=None, is_causal=False):
-        pass
+        query = self.in_proj_query(query)
+        key = self.in_proj_key(key)
+        value = self.in_proj_value(value)
+
+        multihead_shape = (self.num_heads, self.head_dim)
+        query = query.view(query.shape[:-1] + multihead_shape).transpose(-2, -3)
+        key = key.view(key.shape[:-1] + multihead_shape).transpose(-2, -3)
+        value = value.view(value.shape[:-1] + multihead_shape).transpose(-2, -3)
+
+        out = nn.functional.scaled_dot_product_attention(
+            self.rope(query),
+            self.rope(key),
+            value,
+            dropout_p=self.dropout if self.training else 0.0,
+            attn_mask=None if is_causal else attn_mask,
+            is_causal=is_causal,
+        )
+        out = out.transpose(-2, -3)
+        out = out.reshape(out.shape[:-2] + (-1,))
+        out = self.out_proj(out)
+        return out
 
 
 class RMSTransformerEncoderLayer(nn.Module):
