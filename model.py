@@ -30,7 +30,7 @@ class RoPEMultiheadAttention(nn.Module):
         pass
 
 
-class RMSTransformerEncoderLayer(nn.TransformerEncoderLayer):
+class RMSTransformerEncoderLayer(nn.Module):
     def __init__(
         self,
         d_model,
@@ -300,7 +300,9 @@ class LLaMA1(nn.Module):
     CONTEXT_WINDOW = 2048
     MODEL_DIM = 8192
     NUM_HEADS = 64
-    DIM_FEEDFORWARD = 8 * MODEL_DIM // 3
+    # 8 * MODEL_DIM // 3 = 21845 is paper value, round to multiple of 256 for hardware
+    # efficiency.
+    DIM_FEEDFORWARD = 22016
     NUM_LAYERS = 80
 
     def __init__(self, device=None, dtype=None):
@@ -344,7 +346,7 @@ class LLaMA1(nn.Module):
         assert length <= self.CONTEXT_WINDOW
         out = self.embedding(input)
         for layer in self.encoder:
-            out = layer(src=out, mask=self.mask[:length, :length], is_causal=True)
+            out = layer(src=out, src_mask=self.mask[:length, :length], is_causal=True)
         out = self.linear(self.rms_norm(out))
         return out
 
