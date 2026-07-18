@@ -314,7 +314,7 @@ class LLaMA1(nn.Module):
                 d_model=self.MODEL_DIM,
                 nhead=self.NUM_HEADS,
                 dim_feedforward=self.DIM_FEEDFORWARD,
-                dropout=0.1,
+                dropout=0.0,
                 activation=SwishGLU,
                 rms_norm_eps=1e-05,
                 batch_first=True,
@@ -330,6 +330,13 @@ class LLaMA1(nn.Module):
             ),
             persistent=False,
         )
+        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, bias=True, **config)
+        self.linear = nn.Linear(
+            in_features=self.MODEL_DIM,
+            out_features=self.VOCAB_SIZE,
+            bias=False,
+            **config,
+        )
         self.reset_parameters()
 
     def forward(self, input):
@@ -337,7 +344,7 @@ class LLaMA1(nn.Module):
         assert length <= self.CONTEXT_WINDOW
         out = self.embedding(input)
         out = self.encoder(src=out, mask=self.mask[:length, :length], is_causal=True)
-        out = out @ self.embedding.weight.T
+        out = self.linear(self.rms_norm(out))
         return out
 
     def reset_parameters(self):
