@@ -300,7 +300,7 @@ class LLaMA1(nn.Module):
     CONTEXT_WINDOW = 2048
     MODEL_DIM = 8192
     NUM_HEADS = 64
-    DIM_FEEDFORWARD = 4 * MODEL_DIM
+    DIM_FEEDFORWARD = 8 * MODEL_DIM // 3
     NUM_LAYERS = 80
 
     def __init__(self, device=None, dtype=None):
@@ -309,19 +309,19 @@ class LLaMA1(nn.Module):
         self.embedding = nn.Embedding(
             num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
         )
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer=RMSTransformerEncoderLayer(
-                d_model=self.MODEL_DIM,
-                nhead=self.NUM_HEADS,
-                dim_feedforward=self.DIM_FEEDFORWARD,
-                dropout=0.0,
-                activation=SwishGLU,
-                rms_norm_eps=1e-05,
-                batch_first=True,
-                norm_first=True,
-                **config,
-            ),
-            num_layers=self.NUM_LAYERS,
+        encoder_layer = RMSTransformerEncoderLayer(
+            d_model=self.MODEL_DIM,
+            nhead=self.NUM_HEADS,
+            dim_feedforward=self.DIM_FEEDFORWARD,
+            dropout=0.0,
+            activation=SwishGLU,
+            rms_norm_eps=1e-05,
+            batch_first=True,
+            norm_first=True,
+            **config,
+        )
+        self.encoder = nn.ModuleList(
+            [copy.deepcopy(encoder_layer) for _ in range(self.NUM_LAYERS)],
         )
         self.register_buffer(
             "mask",
@@ -330,7 +330,7 @@ class LLaMA1(nn.Module):
             ),
             persistent=False,
         )
-        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, bias=True, **config)
+        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
         self.linear = nn.Linear(
             in_features=self.MODEL_DIM,
             out_features=self.VOCAB_SIZE,
@@ -343,7 +343,8 @@ class LLaMA1(nn.Module):
         length = input.size(-1)
         assert length <= self.CONTEXT_WINDOW
         out = self.embedding(input)
-        out = self.encoder(src=out, mask=self.mask[:length, :length], is_causal=True)
+        for layer in self.encoder:
+            out = layer(src=out, mask=self.mask[:length, :length], is_causal=True)
         out = self.linear(self.rms_norm(out))
         return out
 
@@ -357,9 +358,13 @@ class LLaMA1(nn.Module):
                 nn.init.normal_(module.weight, std=0.02)
 
         residual_layer_scaler = 1.0 / math.sqrt(2 * self.NUM_LAYERS)
-        for name, param in self.encoder.named_parameters():
-            if name.endswith("out_proj.weight") or name.endswith("linear2.weight"):
-                nn.init.normal_(param, std=0.02 * residual_layer_scaler)
+        for layer in self.encoder:
+            nn.init.normal_(
+                layer.multi_head_attn.out_proj.weight, std=0.02 * residual_layer_scaler
+            )
+            nn.init.normal_(
+                layer.ffn.down_proj.weight, std=0.02 * residual_layer_scaler
+            )
 
 
 class LLaMA2(nn.Module):
