@@ -12,14 +12,32 @@ class SwishGLU(nn.Module):
         pass
 
 
-class RMSTransformerEncoderLayer(nn.Module):
+class RoPE(nn.Module):
+    def __init__(self):
+        pass
+
+    def forward(self, input):
+        pass
+
+
+class RoPEMultiheadAttention(nn.Module):
+    def __init__(
+        self, embed_dim, num_heads, dropout=0.0, bias=True, device=None, dtype=None
+    ):
+        pass
+
+    def forward(self, query, key, value, attn_mask=None, is_causal=False):
+        pass
+
+
+class RMSTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def __init__(
         self,
         d_model,
         nhead,
         dim_feedforward=2048,
         dropout=0.1,
-        activation=nn.functional.relu,
+        activation=SwishGLU,
         rms_norm_eps=1e-05,
         batch_first=True,
         norm_first=True,
@@ -30,33 +48,23 @@ class RMSTransformerEncoderLayer(nn.Module):
         super().__init__()
         config = {"device": device, "dtype": dtype}
         self.norm_first = norm_first
-        self.rms_norm1 = nn.RMSNorm(d_model, rms_norm_eps, **config)
-        self.multi_head_attn = nn.MultiheadAttention(
-            embed_dim=d_model,
-            num_heads=nhead,
-            dropout=dropout,
-            bias=bias,
-            batch_first=batch_first,
-            **config,
+        self.rms_norm1 = nn.RMSNorm(d_model, eps=rms_norm_eps, **config)
+        self.multi_head_attn = RoPEMultiheadAttention(
+            embed_dim=d_model, num_heads=nhead, dropout=dropout, bias=bias, **config
         )
         self.dropout = nn.Dropout(p=dropout)
 
-        self.rms_norm2 = nn.RMSNorm(d_model, rms_norm_eps, **config)
+        self.rms_norm2 = nn.RMSNorm(d_model, eps=rms_norm_eps, **config)
         self.ffn = nn.Sequential(
             nn.Linear(),
-            SwishGLU(),
+            activation(),
             nn.Dropout(p=dropout),
             nn.Linear(),
             nn.Dropout(p=dropout),
         )
 
     def forward(self, src, src_mask=None, is_causal=False):
-        if self.norm_first:
-            mha_input = self.rms_norm1(src)
-            mha_out, _ = self.multi_head_attn()
-
-        else:
-            pass
+        pass
 
 
 class T5(nn.Module):
@@ -288,21 +296,63 @@ class GPT3(nn.Module):
 
 
 class LLaMA1(nn.Module):
-    VOCAB_SIZE = 0
-    CONTEXT_WINDOW = 0
+    VOCAB_SIZE = 32000
+    CONTEXT_WINDOW = 2048
     MODEL_DIM = 8192
     NUM_HEADS = 64
     DIM_FEEDFORWARD = 4 * MODEL_DIM
     NUM_LAYERS = 80
 
-    def __init__(self):
+    def __init__(self, device=None, dtype=None):
         super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.embedding = nn.Embedding(
+            num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer=RMSTransformerEncoderLayer(
+                d_model=self.MODEL_DIM,
+                nhead=self.NUM_HEADS,
+                dim_feedforward=self.DIM_FEEDFORWARD,
+                dropout=0.1,
+                activation=SwishGLU,
+                rms_norm_eps=1e-05,
+                batch_first=True,
+                norm_first=True,
+                **config,
+            ),
+            num_layers=self.NUM_LAYERS,
+        )
+        self.register_buffer(
+            "mask",
+            nn.Transformer.generate_square_subsequent_mask(
+                self.CONTEXT_WINDOW, device=device
+            ),
+            persistent=False,
+        )
+        self.reset_parameters()
 
     def forward(self, input):
-        pass
+        length = input.size(-1)
+        assert length <= self.CONTEXT_WINDOW
+        out = self.embedding(input)
+        out = self.encoder(src=out, mask=self.mask[:length, :length], is_causal=True)
+        out = out @ self.embedding.weight.T
+        return out
 
     def reset_parameters(self):
-        pass
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, std=0.02)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, std=0.02)
+
+        residual_layer_scaler = 1.0 / math.sqrt(2 * self.NUM_LAYERS)
+        for name, param in self.encoder.named_parameters():
+            if name.endswith("out_proj.weight") or name.endswith("linear2.weight"):
+                nn.init.normal_(param, std=0.02 * residual_layer_scaler)
 
 
 class LLaMA2(nn.Module):
