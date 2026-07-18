@@ -2,14 +2,22 @@ import copy
 import math
 import torch
 import torch.nn as nn
+import collections.OrderedDict as OrderedDict
 
 
 class SwishGLU(nn.Module):
-    def __init__(self):
-        pass
+    def __init__(self, dim=-1, beta=1.0):
+        super().__init__()
+        self.dim = dim
+        self.beta = beta
 
     def forward(self, input):
-        pass
+        assert input.size(self.dim) % 2 == 0
+        a, b = torch.chunk(input, 2, self.dim)
+        if isinstance(self.beta, (int, float)) and self.beta == 1.0:
+            return nn.functional.silu(a) * b
+        else:
+            return a * nn.functional.sigmoid(self.beta * a) * b
 
 
 class RoPE(nn.Module):
@@ -39,7 +47,6 @@ class RMSTransformerEncoderLayer(nn.Module):
         dropout=0.1,
         activation=SwishGLU,
         rms_norm_eps=1e-05,
-        batch_first=True,
         norm_first=True,
         bias=True,
         device=None,
@@ -56,15 +63,39 @@ class RMSTransformerEncoderLayer(nn.Module):
 
         self.rms_norm2 = nn.RMSNorm(d_model, eps=rms_norm_eps, **config)
         self.ffn = nn.Sequential(
-            nn.Linear(),
-            activation(),
-            nn.Dropout(p=dropout),
-            nn.Linear(),
-            nn.Dropout(p=dropout),
+            OrderedDict(
+                [
+                    (
+                        "up_proj",
+                        nn.Linear(d_model, 2 * dim_feedforward, bias, **config),
+                    ),
+                    ("act", activation()),
+                    ("dropout1", nn.Dropout(p=dropout)),
+                    ("down_proj", nn.Linear(dim_feedforward, d_model, bias, **config)),
+                    ("dropout2", nn.Dropout(p=dropout)),
+                ]
+            )
         )
 
     def forward(self, src, src_mask=None, is_causal=False):
-        pass
+        if self.norm_first:
+            mha_in = self.rms_norm1(src)
+            mha_out = self.multi_head_attn(
+                query=mha_in,
+                key=mha_in,
+                value=mha_in,
+                attn_mask=src_mask,
+                is_causal=is_causal,
+            )
+            out = src + self.dropout(mha_out)
+            out = out + self.ffn(self.rms_norm2(out))
+        else:
+            mha_out = self.multi_head_attn(
+                query=src, key=src, value=src, attn_mask=src_mask, is_causal=is_causal
+            )
+            out = self.rms_norm1(src + self.dropout(mha_out))
+            out = self.rms_norm2(out + self.ffn(out))
+        return out
 
 
 class T5(nn.Module):
@@ -206,10 +237,10 @@ class GPT2(nn.Module):
                 nn.init.normal_(module.in_proj_weight, std=0.02)
                 nn.init.zeros_(module.in_proj_bias)
 
-        residual_layer_scaler = 1.0 / math.sqrt(self.NUM_LAYERS * 2)
+        res_layer_scaler = 1.0 / math.sqrt(self.NUM_LAYERS * 2)
         for name, param in self.encoder.named_parameters():
             if name.endswith("out_proj.weight") or name.endswith("linear2.weight"):
-                nn.init.normal_(param, std=0.02 * residual_layer_scaler)
+                nn.init.normal_(param, std=0.02 * res_layer_scaler)
 
 
 class GPT3(nn.Module):
@@ -289,10 +320,10 @@ class GPT3(nn.Module):
                 nn.init.normal_(module.in_proj_weight, std=0.02)
                 nn.init.zeros_(module.in_proj_bias)
 
-        residual_layer_scaler = 1.0 / math.sqrt(2 * self.NUM_LAYERS)
+        res_layer_scaler = 1.0 / math.sqrt(2 * self.NUM_LAYERS)
         for name, param in self.encoder.named_parameters():
             if name.endswith("out_proj.weight") or name.endswith("linear2.weight"):
-                nn.init.normal_(param, std=0.02 * residual_layer_scaler)
+                nn.init.normal_(param, std=0.02 * res_layer_scaler)
 
 
 class LLaMA1(nn.Module):
@@ -318,8 +349,8 @@ class LLaMA1(nn.Module):
             dropout=0.0,
             activation=SwishGLU,
             rms_norm_eps=1e-05,
-            batch_first=True,
             norm_first=True,
+            bias=False,
             **config,
         )
         self.encoder = nn.ModuleList(
@@ -359,14 +390,12 @@ class LLaMA1(nn.Module):
             elif isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, std=0.02)
 
-        residual_layer_scaler = 1.0 / math.sqrt(2 * self.NUM_LAYERS)
+        res_layer_scaler = 1.0 / math.sqrt(2 * self.NUM_LAYERS)
         for layer in self.encoder:
             nn.init.normal_(
-                layer.multi_head_attn.out_proj.weight, std=0.02 * residual_layer_scaler
+                layer.multi_head_attn.out_proj.weight, std=0.02 * res_layer_scaler
             )
-            nn.init.normal_(
-                layer.ffn.down_proj.weight, std=0.02 * residual_layer_scaler
-            )
+            nn.init.normal_(layer.ffn.down_proj.weight, std=0.02 * res_layer_scaler)
 
 
 class LLaMA2(nn.Module):
