@@ -81,10 +81,9 @@ class RoPEMultiheadAttention(nn.Module):
         self,
         embed_dim,
         num_heads,
-        context_window,
         num_groups=None,
         dropout=0.0,
-        rope=nn.Identity,
+        rope=nn.Identity(),
         bias=True,
         device=None,
         dtype=None,
@@ -138,10 +137,9 @@ class RMSTransformerEncoderLayer(nn.Module):
         self,
         d_model,
         nhead,
-        context_window,
         ngroup=None,
         dropout=0.1,
-        rope=nn.Identity,
+        rope=nn.Identity(),
         dim_feedforward=2048,
         activation=SwishGLU,
         rms_norm_eps=1e-05,
@@ -158,7 +156,6 @@ class RMSTransformerEncoderLayer(nn.Module):
             embed_dim=d_model,
             num_heads=nhead,
             num_groups=ngroup,
-            context_window=context_window,
             dropout=dropout,
             rope=rope,
             bias=bias,
@@ -449,24 +446,26 @@ class LLaMA1(nn.Module):
         )
         assert self.MODEL_DIM % self.NUM_HEADS == 0
         self.rope = RoPE(
-            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 500000.0, **config
+            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 10000.0, **config
         )
-        encoder_layer = RMSTransformerEncoderLayer(
-            d_model=self.MODEL_DIM,
-            nhead=self.NUM_HEADS,
-            context_window=self.CONTEXT_WINDOW,
-            ngroup=None,
-            dropout=0.0,
-            rope=self.rope,
-            dim_feedforward=self.DIM_FEEDFORWARD,
-            activation=SwishGLU,
-            rms_norm_eps=1e-05,
-            norm_first=True,
-            bias=False,
-            **config,
-        )
+        # avoid deepcopy with self.rope otherwise it duplicate the rope again.
         self.encoder = nn.ModuleList(
-            [copy.deepcopy(encoder_layer) for _ in range(self.NUM_LAYERS)],
+            [
+                RMSTransformerEncoderLayer(
+                    d_model=self.MODEL_DIM,
+                    nhead=self.NUM_HEADS,
+                    ngroup=None,
+                    dropout=0.0,
+                    rope=self.rope,
+                    dim_feedforward=self.DIM_FEEDFORWARD,
+                    activation=SwishGLU,
+                    rms_norm_eps=1e-05,
+                    norm_first=True,
+                    bias=False,
+                    **config,
+                )
+                for _ in range(self.NUM_LAYERS)
+            ],
         )
         self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
         self.linear = nn.Linear(
@@ -522,24 +521,25 @@ class LLaMA2(nn.Module):
         )
         assert self.MODEL_DIM % self.NUM_HEADS == 0
         self.rope = RoPE(
-            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 500000.0, **config
-        )
-        encoder_layer = RMSTransformerEncoderLayer(
-            d_model=self.MODEL_DIM,
-            nhead=self.NUM_HEADS,
-            context_window=self.CONTEXT_WINDOW,
-            ngroup=self.NUM_GROUPS,
-            dropout=0.0,
-            rope=self.rope,
-            dim_feedforward=self.DIM_FEEDFORWARD,
-            activation=SwishGLU,
-            rms_norm_eps=1e-05,
-            norm_first=True,
-            bias=False,
-            **config,
+            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 10000.0, **config
         )
         self.encoder = nn.ModuleList(
-            [copy.deepcopy(encoder_layer) for _ in range(self.NUM_LAYERS)]
+            [
+                RMSTransformerEncoderLayer(
+                    d_model=self.MODEL_DIM,
+                    nhead=self.NUM_HEADS,
+                    ngroup=self.NUM_GROUPS,
+                    dropout=0.0,
+                    rope=self.rope,
+                    dim_feedforward=self.DIM_FEEDFORWARD,
+                    activation=SwishGLU,
+                    rms_norm_eps=1e-05,
+                    norm_first=True,
+                    bias=False,
+                    **config,
+                )
+                for _ in range(self.NUM_LAYERS)
+            ]
         )
         self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
         self.linear = nn.Linear(
@@ -589,22 +589,23 @@ class LLaMA3(nn.Module):
         self.rope = RoPE(
             self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 500000.0, **config
         )
-        encoder_layer = RMSTransformerEncoderLayer(
-            d_model=self.MODEL_DIM,
-            nhead=self.NUM_HEADS,
-            context_window=self.CONTEXT_WINDOW,
-            ngroup=self.NUM_GROUPS,
-            dropout=0.0,
-            rope=self.rope,
-            dim_feedforward=self.DIM_FEEDFORWARD,
-            activation=SwishGLU,
-            rms_norm_eps=1e-05,
-            norm_first=True,
-            bias=False,
-            **config,
-        )
         self.encoder = nn.ModuleList(
-            [copy.deepcopy(encoder_layer) for _ in range(self.NUM_LAYERS)]
+            [
+                RMSTransformerEncoderLayer(
+                    d_model=self.MODEL_DIM,
+                    nhead=self.NUM_HEADS,
+                    ngroup=self.NUM_GROUPS,
+                    dropout=0.0,
+                    rope=self.rope,
+                    dim_feedforward=self.DIM_FEEDFORWARD,
+                    activation=SwishGLU,
+                    rms_norm_eps=1e-05,
+                    norm_first=True,
+                    bias=False,
+                    **config,
+                )
+                for _ in range(self.NUM_LAYERS)
+            ]
         )
         self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
         self.linear = nn.Linear(self.MODEL_DIM, self.VOCAB_SIZE, bias=False, **config)
