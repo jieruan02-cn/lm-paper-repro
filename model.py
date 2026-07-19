@@ -21,12 +21,14 @@ class SwishGLU(nn.Module):
 
 
 class RoPE(nn.Module):
-    def __init__(self, head_dim, context_window, device=None, dtype=None):
+    def __init__(
+        self, head_dim, context_window, rope_theta=10000.0, device=None, dtype=None
+    ):
         super().__init__()
         config = {"device": device, "dtype": dtype}
         self.register_buffer(
             "theta",
-            torch.pow(10000.0, torch.arange(0, -head_dim, -2, **config) / head_dim),
+            torch.pow(rope_theta, torch.arange(0, -head_dim, -2, **config) / head_dim),
             persistent=False,
         )
         self.register_buffer(
@@ -82,6 +84,7 @@ class RoPEMultiheadAttention(nn.Module):
         context_window,
         num_groups=None,
         dropout=0.0,
+        rope=nn.Identity,
         bias=True,
         device=None,
         dtype=None,
@@ -102,7 +105,7 @@ class RoPEMultiheadAttention(nn.Module):
             kv_dim = self.head_dim * num_groups
         self.in_proj_key = nn.Linear(embed_dim, kv_dim, bias=bias, **config)
         self.in_proj_value = nn.Linear(embed_dim, kv_dim, bias=bias, **config)
-        self.rope = RoPE(self.head_dim, context_window, **config)
+        self.rope = rope
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
 
     def forward(self, query, key, value, attn_mask=None, is_causal=False):
@@ -138,6 +141,7 @@ class RMSTransformerEncoderLayer(nn.Module):
         context_window,
         ngroup=None,
         dropout=0.1,
+        rope=nn.Identity,
         dim_feedforward=2048,
         activation=SwishGLU,
         rms_norm_eps=1e-05,
@@ -156,6 +160,7 @@ class RMSTransformerEncoderLayer(nn.Module):
             num_groups=ngroup,
             context_window=context_window,
             dropout=dropout,
+            rope=rope,
             bias=bias,
             **config,
         )
@@ -442,12 +447,17 @@ class LLaMA1(nn.Module):
         self.embedding = nn.Embedding(
             num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
         )
+        assert self.MODEL_DIM % self.NUM_HEADS == 0
+        self.rope = RoPE(
+            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 500000.0, **config
+        )
         encoder_layer = RMSTransformerEncoderLayer(
             d_model=self.MODEL_DIM,
             nhead=self.NUM_HEADS,
             context_window=self.CONTEXT_WINDOW,
             ngroup=None,
             dropout=0.0,
+            rope=self.rope,
             dim_feedforward=self.DIM_FEEDFORWARD,
             activation=SwishGLU,
             rms_norm_eps=1e-05,
@@ -457,13 +467,6 @@ class LLaMA1(nn.Module):
         )
         self.encoder = nn.ModuleList(
             [copy.deepcopy(encoder_layer) for _ in range(self.NUM_LAYERS)],
-        )
-        self.register_buffer(
-            "mask",
-            nn.Transformer.generate_square_subsequent_mask(
-                self.CONTEXT_WINDOW, device=device
-            ),
-            persistent=False,
         )
         self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
         self.linear = nn.Linear(
@@ -475,11 +478,11 @@ class LLaMA1(nn.Module):
         self.reset_parameters()
 
     def forward(self, input):
-        length = input.size(-1)
-        assert length <= self.CONTEXT_WINDOW
         out = self.embedding(input)
         for layer in self.encoder:
-            out = layer(src=out, src_mask=self.mask[:length, :length], is_causal=True)
+            # don't use buffer mask and instead relies on SDPA's optimized version,
+            # otherwise will OOM for large context window.
+            out = layer(src=out, is_causal=True)
         out = self.linear(self.rms_norm(out))
         return out
 
@@ -517,12 +520,17 @@ class LLaMA2(nn.Module):
         self.embedding = nn.Embedding(
             num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
         )
+        assert self.MODEL_DIM % self.NUM_HEADS == 0
+        self.rope = RoPE(
+            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 500000.0, **config
+        )
         encoder_layer = RMSTransformerEncoderLayer(
             d_model=self.MODEL_DIM,
             nhead=self.NUM_HEADS,
             context_window=self.CONTEXT_WINDOW,
             ngroup=self.NUM_GROUPS,
             dropout=0.0,
+            rope=self.rope,
             dim_feedforward=self.DIM_FEEDFORWARD,
             activation=SwishGLU,
             rms_norm_eps=1e-05,
@@ -533,14 +541,6 @@ class LLaMA2(nn.Module):
         self.encoder = nn.ModuleList(
             [copy.deepcopy(encoder_layer) for _ in range(self.NUM_LAYERS)]
         )
-        self.register_buffer(
-            "mask",
-            nn.Transformer.generate_square_subsequent_mask(
-                self.CONTEXT_WINDOW, device=device
-            ),
-            persistent=False,
-        )
-
         self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
         self.linear = nn.Linear(
             in_features=self.MODEL_DIM,
@@ -551,11 +551,9 @@ class LLaMA2(nn.Module):
         self.reset_parameters()
 
     def forward(self, input):
-        length = input.size(-1)
-        assert length <= self.CONTEXT_WINDOW
         out = self.embedding(input)
         for layer in self.encoder:
-            out = layer(src=out, src_mask=self.mask[:length, :length], is_causal=True)
+            out = layer(src=out, is_causal=True)
         out = self.linear(self.rms_norm(out))
         return out
 
@@ -575,14 +573,61 @@ class LLaMA2(nn.Module):
 
 
 class LLaMA3(nn.Module):
-    def __init__(self):
-        pass
+    VOCAB_SIZE = 128256
+    CONTEXT_WINDOW = 131072
+    MODEL_DIM = 16384
+    NUM_HEADS = 128
+    NUM_GROUPS = 8
+    DIM_FEEDFORWARD = 53248
+    NUM_LAYERS = 126
+
+    def __init__(self, device=None, dtype=None):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.embedding = nn.Embedding(self.VOCAB_SIZE, self.MODEL_DIM, **config)
+        assert self.MODEL_DIM % self.NUM_HEADS == 0
+        self.rope = RoPE(
+            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 500000.0, **config
+        )
+        encoder_layer = RMSTransformerEncoderLayer(
+            d_model=self.MODEL_DIM,
+            nhead=self.NUM_HEADS,
+            context_window=self.CONTEXT_WINDOW,
+            ngroup=self.NUM_GROUPS,
+            dropout=0.0,
+            rope=self.rope,
+            dim_feedforward=self.DIM_FEEDFORWARD,
+            activation=SwishGLU,
+            rms_norm_eps=1e-05,
+            norm_first=True,
+            bias=False,
+            **config,
+        )
+        self.encoder = nn.ModuleList(
+            [copy.deepcopy(encoder_layer) for _ in range(self.NUM_LAYERS)]
+        )
+        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
+        self.linear = nn.Linear(self.MODEL_DIM, self.VOCAB_SIZE, bias=False, **config)
+        self.reset_parameters()
 
     def forward(self, input):
-        pass
+        out = self.embedding(input)
+        for layer in self.encoder:
+            out = layer(src=out, is_causal=True)
+        out = self.linear(self.rms_norm(out))
+        return out
 
     def reset_parameters(self):
-        pass
+        for module in self.modules():
+            if isinstance(module, nn.Embedding) or isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, std=0.02)
+
+        res_layer_scaler = 1.0 / math.sqrt(2.0 * self.NUM_LAYERS)
+        for layer in self.encoder:
+            nn.init.normal_(
+                layer.multi_head_attn.out_proj.weight, std=0.02 * res_layer_scaler
+            )
+            nn.init.normal_(layer.ffn.down_proj.weight, std=0.02 * res_layer_scaler)
 
 
 class PaLM(nn.Module):
