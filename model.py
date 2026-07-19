@@ -507,7 +507,8 @@ class LLaMA2(nn.Module):
     MODEL_DIM = 8192
     NUM_HEADS = 64
     NUM_GROUPS = 8
-    DIM_FEEDFORWARD = 22016
+    # scale the dim_feedforward by 1.33, MODEL_DIM * 8 / 3 * 1.33
+    DIM_FEEDFORWARD = 28672
     NUM_LAYERS = 80
 
     def __init__(self, device=None, dtype=None):
@@ -550,7 +551,7 @@ class LLaMA2(nn.Module):
         self.reset_parameters()
 
     def forward(self, input):
-        length = input.size(-2)
+        length = input.size(-1)
         assert length <= self.CONTEXT_WINDOW
         out = self.embedding(input)
         for layer in self.encoder:
