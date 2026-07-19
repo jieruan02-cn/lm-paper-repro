@@ -578,6 +578,12 @@ class LLaMA3(nn.Module):
     def __init__(self):
         pass
 
+    def forward(self, input):
+        pass
+
+    def reset_parameters(self):
+        pass
+
 
 class PaLM(nn.Module):
     def __init__(self):
