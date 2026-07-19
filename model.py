@@ -80,6 +80,7 @@ class RoPEMultiheadAttention(nn.Module):
         embed_dim,
         num_heads,
         context_window,
+        num_groups=None,
         dropout=0.0,
         bias=True,
         device=None,
@@ -90,11 +91,17 @@ class RoPEMultiheadAttention(nn.Module):
         self.num_heads = num_heads
         assert embed_dim % num_heads == 0
         self.head_dim = embed_dim // num_heads
+        self.num_groups = num_groups
 
         config = {"device": device, "dtype": dtype}
         self.in_proj_query = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
-        self.in_proj_key = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
-        self.in_proj_value = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
+        if num_groups is None:
+            kv_dim = embed_dim
+        else:
+            assert num_heads % num_groups == 0
+            kv_dim = self.head_dim * num_groups
+        self.in_proj_key = nn.Linear(embed_dim, kv_dim, bias=bias, **config)
+        self.in_proj_value = nn.Linear(embed_dim, kv_dim, bias=bias, **config)
         self.rope = RoPE(self.head_dim, context_window, **config)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
 
@@ -103,7 +110,7 @@ class RoPEMultiheadAttention(nn.Module):
         key = self.in_proj_key(key)
         value = self.in_proj_value(value)
 
-        multihead_shape = (self.num_heads, self.head_dim)
+        multihead_shape = (-1, self.head_dim)
         query = query.view(query.shape[:-1] + multihead_shape).transpose(-2, -3)
         key = key.view(key.shape[:-1] + multihead_shape).transpose(-2, -3)
         value = value.view(value.shape[:-1] + multihead_shape).transpose(-2, -3)
@@ -115,6 +122,7 @@ class RoPEMultiheadAttention(nn.Module):
             dropout_p=self.dropout if self.training else 0.0,
             attn_mask=None if is_causal else attn_mask,
             is_causal=is_causal,
+            enable_gqa=self.num_groups is not None,
         )
         out = out.transpose(-2, -3)
         out = out.reshape(out.shape[:-2] + (-1,))
@@ -128,8 +136,9 @@ class RMSTransformerEncoderLayer(nn.Module):
         d_model,
         nhead,
         context_window,
-        dim_feedforward=2048,
+        ngroup=None,
         dropout=0.1,
+        dim_feedforward=2048,
         activation=SwishGLU,
         rms_norm_eps=1e-05,
         norm_first=True,
@@ -144,6 +153,7 @@ class RMSTransformerEncoderLayer(nn.Module):
         self.multi_head_attn = RoPEMultiheadAttention(
             embed_dim=d_model,
             num_heads=nhead,
+            num_groups=ngroup,
             context_window=context_window,
             dropout=dropout,
             bias=bias,
@@ -436,8 +446,9 @@ class LLaMA1(nn.Module):
             d_model=self.MODEL_DIM,
             nhead=self.NUM_HEADS,
             context_window=self.CONTEXT_WINDOW,
-            dim_feedforward=self.DIM_FEEDFORWARD,
+            ngroup=None,
             dropout=0.0,
+            dim_feedforward=self.DIM_FEEDFORWARD,
             activation=SwishGLU,
             rms_norm_eps=1e-05,
             norm_first=True,
@@ -489,9 +500,77 @@ class LLaMA1(nn.Module):
             nn.init.normal_(layer.ffn.down_proj.weight, std=0.02 * res_layer_scaler)
 
 
+# Main difference from LLaMA1 is context window and usage of GQA.
 class LLaMA2(nn.Module):
-    def __init__(self):
-        pass
+    VOCAB_SIZE = 32000
+    CONTEXT_WINDOW = 4096
+    MODEL_DIM = 8192
+    NUM_HEADS = 64
+    NUM_GROUPS = 8
+    DIM_FEEDFORWARD = 22016
+    NUM_LAYERS = 80
+
+    def __init__(self, device=None, dtype=None):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.embedding = nn.Embedding(
+            num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
+        )
+        encoder_layer = RMSTransformerEncoderLayer(
+            d_model=self.MODEL_DIM,
+            nhead=self.NUM_HEADS,
+            context_window=self.CONTEXT_WINDOW,
+            ngroup=self.NUM_GROUPS,
+            dropout=0.0,
+            dim_feedforward=self.DIM_FEEDFORWARD,
+            activation=SwishGLU,
+            rms_norm_eps=1e-05,
+            norm_first=True,
+            bias=False,
+            **config,
+        )
+        self.encoder = nn.ModuleList(
+            [copy.deepcopy(encoder_layer) for _ in range(self.NUM_LAYERS)]
+        )
+        self.register_buffer(
+            "mask",
+            nn.Transformer.generate_square_subsequent_mask(
+                self.CONTEXT_WINDOW, device=device
+            ),
+            persistent=False,
+        )
+
+        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
+        self.linear = nn.Linear(
+            in_features=self.MODEL_DIM,
+            out_features=self.VOCAB_SIZE,
+            bias=False,
+            **config,
+        )
+        self.reset_parameters()
+
+    def forward(self, input):
+        length = input.size(-2)
+        assert length <= self.CONTEXT_WINDOW
+        out = self.embedding(input)
+        for layer in self.encoder:
+            out = layer(src=out, src_mask=self.mask[:length, :length], is_causal=True)
+        out = self.linear(self.rms_norm(out))
+        return out
+
+    def reset_parameters(self):
+        for module in self.modules():
+            if isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, std=0.02)
+            elif isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, std=0.02)
+
+        res_layer_scaler = 1.0 / math.sqrt(2 * self.NUM_LAYERS)
+        for layer in self.encoder:
+            nn.init.normal_(
+                layer.multi_head_attn.out_proj.weight, std=0.02 * res_layer_scaler
+            )
+            nn.init.normal_(layer.ffn.down_proj.weight, std=0.02 * res_layer_scaler)
 
 
 class LLaMA3(nn.Module):
