@@ -22,13 +22,22 @@ class SwishGLU(nn.Module):
 
 class RoPE(nn.Module):
     def __init__(
-        self, head_dim, context_window, rope_theta=10000.0, device=None, dtype=None
+        self,
+        head_dim,
+        context_window,
+        base_freq=10000.0,
+        rope_scaling=None,
+        device=None,
+        dtype=None,
     ):
         super().__init__()
         config = {"device": device, "dtype": dtype}
+        theta = torch.pow(
+            base_freq, torch.arange(0, -head_dim, -2, **config) / head_dim
+        )
         self.register_buffer(
             "theta",
-            torch.pow(rope_theta, torch.arange(0, -head_dim, -2, **config) / head_dim),
+            theta if rope_scaling is None else rope_scaling(theta),
             persistent=False,
         )
         self.register_buffer(
@@ -446,7 +455,7 @@ class LLaMA1(nn.Module):
         )
         assert self.MODEL_DIM % self.NUM_HEADS == 0
         self.rope = RoPE(
-            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 10000.0, **config
+            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, **config
         )
         # avoid deepcopy with self.rope otherwise it duplicate the rope again.
         self.encoder = nn.ModuleList(
@@ -521,7 +530,7 @@ class LLaMA2(nn.Module):
         )
         assert self.MODEL_DIM % self.NUM_HEADS == 0
         self.rope = RoPE(
-            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 10000.0, **config
+            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, **config
         )
         self.encoder = nn.ModuleList(
             [
@@ -587,7 +596,11 @@ class LLaMA3(nn.Module):
         self.embedding = nn.Embedding(self.VOCAB_SIZE, self.MODEL_DIM, **config)
         assert self.MODEL_DIM % self.NUM_HEADS == 0
         self.rope = RoPE(
-            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, 500000.0, **config
+            self.MODEL_DIM // self.NUM_HEADS,
+            self.CONTEXT_WINDOW,
+            base_freq=500000.0,
+            rope_scaling=LLaMA3.rope_scaling,
+            **config,
         )
         self.encoder = nn.ModuleList(
             [
@@ -629,6 +642,22 @@ class LLaMA3(nn.Module):
                 layer.multi_head_attn.out_proj.weight, std=0.02 * res_layer_scaler
             )
             nn.init.normal_(layer.ffn.down_proj.weight, std=0.02 * res_layer_scaler)
+
+    @staticmethod
+    def rope_scaling(theta):
+        # LLaMA3.1 frequency scaling, extends the 8192 pretraining context to
+        # 131072. Not in the paper, see apply_scaling in meta-llama/llama-models.
+        # Its grid searched constants are scale_factor 8, low_freq_factor 1,
+        # high_freq_factor 4 and original context 8192, giving 3 branches on period
+        # with s = (8192 / period - low_freq_factor) / (high_freq_factor - low_freq_factor):
+        #   period > 8192 / low_freq_factor   -> theta / scale_factor
+        #   period < 8192 / high_freq_factor  -> theta
+        #   otherwise                         -> (1 - s) * theta / scale_factor + s * theta
+        period = math.pi * 2 / theta
+        # Clamping s to [0, 1] collapses all 3 branches into the interpolation.
+        smooth = torch.clamp((8192 / period - 1.0) / 3.0, min=0.0, max=1.0)
+        scaled_theta = theta * (0.125 + 0.875 * smooth)
+        return scaled_theta
 
 
 class PaLM(nn.Module):
