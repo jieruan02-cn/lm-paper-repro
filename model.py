@@ -648,11 +648,12 @@ class LLaMA3(nn.Module):
         # LLaMA3.1 frequency scaling, extends the 8192 pretraining context to
         # 131072. Not in the paper, see apply_scaling in meta-llama/llama-models.
         # Its grid searched constants are scale_factor 8, low_freq_factor 1,
-        # high_freq_factor 4 and original context 8192, giving 3 branches on period
-        # with s = (8192 / period - low_freq_factor) / (high_freq_factor - low_freq_factor):
-        #   period > 8192 / low_freq_factor   -> theta / scale_factor
-        #   period < 8192 / high_freq_factor  -> theta
-        #   otherwise                         -> (1 - s) * theta / scale_factor + s * theta
+        # high_freq_factor 4 and original context 8192, and with
+        # s = (8192 / period - low_freq_factor) / (high_freq_factor - low_freq_factor)
+        # the reference branches on period into
+        #   > 8192 / 1 -> theta / 8
+        #   < 8192 / 4 -> theta
+        #   otherwise  -> (1 - s) * theta / 8 + s * theta
         period = math.pi * 2 / theta
         # Clamping s to [0, 1] collapses all 3 branches into the interpolation.
         smooth = torch.clamp((8192 / period - 1.0) / 3.0, min=0.0, max=1.0)
