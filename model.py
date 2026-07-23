@@ -662,7 +662,13 @@ class LLaMA3(nn.Module):
 
 
 class PaLM(nn.Module):
-    def __init__(self):
+    def __init__(self, device=None, dtype=None):
+        super().__init__()
+
+    def forward(self, input):
+        pass
+
+    def reset_parameters(self):
         pass
 
 
