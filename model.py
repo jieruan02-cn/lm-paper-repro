@@ -209,6 +209,25 @@ class RMSTransformerEncoderLayer(nn.Module):
         return out
 
 
+class LNParallelTransformerEncoderLayer(nn.Module):
+    def __init__(
+        self,
+        d_model,
+        nhead,
+        ngroup=None,
+        dropout=0.0,
+        rope=nn.Identity(),
+        dim_feedforward=2048,
+        activation=SwishGLU,
+        layer_norm_eps=1e-05,
+        norm_first=True,
+        bias=False,
+        device=None,
+        dtype=None,
+    ):
+        pass
+
+
 class T5(nn.Module):
     def __init__(self):
         pass
@@ -662,8 +681,38 @@ class LLaMA3(nn.Module):
 
 
 class PaLM(nn.Module):
+    VOCAB_SIZE = 256000
+    CONTEXT_WINDOW = 2048
+    MODEL_DIM = 18432
+    NUM_HEADS = 48
+    DIM_FEEDFORWARD = 4 * MODEL_DIM
+    NUM_LAYERS = 118
+
     def __init__(self, device=None, dtype=None):
         super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.embedding = nn.Embedding(
+            num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
+        )
+        self.rope = RoPE(
+            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, **config
+        )
+        encoder_layer = LNParallelTransformerEncoderLayer(
+            d_model=self.MODEL_DIM,
+            nhead=self.NUM_HEADS,
+            ngroup=1,
+            dropout=0.0,
+            rope=self.rope,
+            dim_feedforward=self.DIM_FEEDFORWARD,
+            activation=SwishGLU,
+            layer_norm_eps=1e-05,
+            norm_first=True,
+            bias=False,
+            **config,
+        )
+        self.encoder = nn.ModuleList(
+            [copy.deepcopy(encoder_layer) for _ in self.NUM_LAYERS]
+        )
 
     def forward(self, input):
         pass
