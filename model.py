@@ -90,6 +90,7 @@ class RoPEMultiheadAttention(nn.Module):
         self,
         embed_dim,
         num_heads,
+        d_head=None,
         num_groups=None,
         dropout=0.0,
         rope=nn.Identity(),
@@ -100,21 +101,25 @@ class RoPEMultiheadAttention(nn.Module):
         super().__init__()
         self.dropout = dropout
         self.num_heads = num_heads
-        assert embed_dim % num_heads == 0
-        self.head_dim = embed_dim // num_heads
+        if d_head is None:
+            assert embed_dim % num_heads == 0
+            self.head_dim = embed_dim // num_heads
+        else:
+            self.head_dim = d_head
+        attn_dim = self.head_dim * self.num_heads
         self.num_groups = num_groups
 
         config = {"device": device, "dtype": dtype}
-        self.in_proj_query = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
+        self.in_proj_query = nn.Linear(embed_dim, attn_dim, bias=bias, **config)
         if num_groups is None:
-            kv_dim = embed_dim
+            kv_dim = attn_dim
         else:
             assert num_heads % num_groups == 0
             kv_dim = self.head_dim * num_groups
         self.in_proj_key = nn.Linear(embed_dim, kv_dim, bias=bias, **config)
         self.in_proj_value = nn.Linear(embed_dim, kv_dim, bias=bias, **config)
         self.rope = rope
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **config)
+        self.out_proj = nn.Linear(attn_dim, embed_dim, bias=bias, **config)
 
     def forward(self, query, key, value, attn_mask=None, is_causal=False):
         query = self.in_proj_query(query)
@@ -214,18 +219,49 @@ class LNParallelTransformerEncoderLayer(nn.Module):
         self,
         d_model,
         nhead,
+        d_head=None,
         ngroup=None,
         dropout=0.0,
         rope=nn.Identity(),
         dim_feedforward=2048,
         activation=SwishGLU,
         layer_norm_eps=1e-05,
-        norm_first=True,
         bias=False,
         device=None,
         dtype=None,
     ):
-        pass
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.layer_norm = nn.LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **config)
+        self.multi_head_attn = RoPEMultiheadAttention(
+            embed_dim=d_model,
+            num_heads=nhead,
+            d_head=d_head,
+            num_groups=ngroup,
+            dropout=dropout,
+            rope=rope,
+            bias=bias,
+            **config,
+        )
+        self.dropout = nn.Dropout(p=dropout)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, 2 * dim_feedforward, bias=bias, **config),
+            activation(),
+            nn.Dropout(p=dropout),
+            nn.Linear(dim_feedforward, d_model, bias=bias, **config),
+            nn.Dropout(p=dropout),
+        )
+
+    def forward(self, input, is_causal=True):
+        normed_input = self.layer_norm(input)
+        mha_out = self.multi_head_attn(
+            query=normed_input,
+            key=normed_input,
+            value=normed_input,
+            is_causal=is_causal,
+        )
+        out = input + self.dropout(mha_out) + self.ffn(normed_input)
+        return out
 
 
 class T5(nn.Module):
@@ -684,6 +720,7 @@ class PaLM(nn.Module):
     VOCAB_SIZE = 256000
     CONTEXT_WINDOW = 2048
     MODEL_DIM = 18432
+    HEAD_DIM = 256
     NUM_HEADS = 48
     DIM_FEEDFORWARD = 4 * MODEL_DIM
     NUM_LAYERS = 118
@@ -694,28 +731,35 @@ class PaLM(nn.Module):
         self.embedding = nn.Embedding(
             num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
         )
-        self.rope = RoPE(
-            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, **config
-        )
-        encoder_layer = LNParallelTransformerEncoderLayer(
-            d_model=self.MODEL_DIM,
-            nhead=self.NUM_HEADS,
-            ngroup=1,
-            dropout=0.0,
-            rope=self.rope,
-            dim_feedforward=self.DIM_FEEDFORWARD,
-            activation=SwishGLU,
-            layer_norm_eps=1e-05,
-            norm_first=True,
-            bias=False,
-            **config,
-        )
+        self.rope = RoPE(self.HEAD_DIM, self.CONTEXT_WINDOW, **config)
         self.encoder = nn.ModuleList(
-            [copy.deepcopy(encoder_layer) for _ in self.NUM_LAYERS]
+            [
+                LNParallelTransformerEncoderLayer(
+                    d_model=self.MODEL_DIM,
+                    nhead=self.NUM_HEADS,
+                    d_head=self.HEAD_DIM,
+                    ngroup=1,
+                    dropout=0.0,
+                    rope=self.rope,
+                    dim_feedforward=self.DIM_FEEDFORWARD,
+                    activation=SwishGLU,
+                    layer_norm_eps=1e-05,
+                    bias=False,
+                    **config,
+                )
+                for _ in range(self.NUM_LAYERS)
+            ]
         )
+        self.layer_norm = nn.LayerNorm(self.MODEL_DIM, eps=1e-05, bias=False, **config)
+        self.reset_parameters()
 
     def forward(self, input):
-        pass
+        out = self.embedding(input)
+        for layer in self.encoder:
+            out = layer(out, is_causal=True)
+        out = self.layer_norm(out)
+        out = out @ self.embedding.weight.T
+        return out
 
     def reset_parameters(self):
         pass
