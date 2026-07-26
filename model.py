@@ -773,6 +773,12 @@ class DeepSeekV2(nn.Module):
     def __init__(self):
         pass
 
+    def forward(self):
+        pass
+
+    def reset_parameters(self):
+        pass
+
 
 class DeepSeekV3(nn.Module):
     def __init__(self):
