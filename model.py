@@ -758,11 +758,15 @@ class PaLM(nn.Module):
         for layer in self.encoder:
             out = layer(out, is_causal=True)
         out = self.layer_norm(out)
-        out = out @ self.embedding.weight.T
+        out = out @ self.embedding.weight.T / math.sqrt(self.MODEL_DIM)
         return out
 
     def reset_parameters(self):
-        pass
+        for module in self.modules():
+            if isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight)
+            elif isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, std=1 / math.sqrt(module.in_features))
 
 
 class DeepSeekV2(nn.Module):
