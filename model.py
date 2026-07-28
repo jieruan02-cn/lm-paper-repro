@@ -428,6 +428,46 @@ class GPT3(GPTBase):
         )
 
 
+class LLaMABase(nn.Module):
+    VOCAB_SIZE = 0
+    CONTEXT_WINDOW = 0
+    MODEL_DIM = 0
+    NUM_HEADS = 0
+    NUM_GROUPS = 0
+    DIM_FEEDFORWARD = 0
+    NUM_LAYERS = 0
+
+    def __init__(self, device=None, dtype=None):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.embedding = nn.Embedding(
+            num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
+        )
+        self.rope
+        self.encoder = nn.ModuleList(
+            [nn.TransformerEncderLayer() for _ in range(self.NUM_LAYERS)]
+        )
+        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
+        self.unembedding = nn.Linear(
+            in_features=self.MODEL_DIM,
+            out_features=self.VOCAB_SIZE,
+            bias=False,
+            **config,
+        )
+        self.reset_parameters()
+
+    def forward(self, input):
+        out = self.embedding(input)
+        for layer in self.encoder:
+            out = layer(out, is_causal=True)
+        out = self.layer_norm(out)
+        out = self.unembedding(out)
+        return out
+
+    def reset_parameters(self):
+        pass
+
+
 class LLaMA1(nn.Module):
     VOCAB_SIZE = 32000
     CONTEXT_WINDOW = 2048
