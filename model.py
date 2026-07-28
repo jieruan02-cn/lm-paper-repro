@@ -274,6 +274,91 @@ class BERT(nn.Module):
         pass
 
 
+class GPTBase(nn.Module):
+    VOCAB_SIZE = 0
+    CONTEXT_WINDOW = 0
+    MODEL_DIM = 0
+    NUM_HEADS = 0
+    DIM_FEEDFORWARD = 0
+    NUM_LAYERS = 0
+    DROPOUT = 0.1
+    LAYER_NORM_EPS = 1e-05
+    SPARSE_BAND = 128
+
+    def __init__(
+        self,
+        norm_first=False,
+        final_layer_norm=False,
+        alternate_sparse_attn=False,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.embedding = nn.Embedding(
+            num_embeddings=self.VOCAB_Size, embedding_dim=self.MODEL_DIM, **config
+        )
+        self.position_embedding = nn.Parameter(
+            torch.empty(self.CONTEXT_WINDOW, self.MODEL_DIM, **config)
+        )
+        self.dropout = nn.Dropout(p=self.DROPOUT)
+        encoder_layer = encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.MODEL_DIM,
+            num_heads=self.NUM_HEADS,
+            dim_feedforward=self.DIM_FEEDFORWARD,
+            dropout=self.DROPOUT,
+            activation=nn.functional.gelu,
+            layer_norm_eps=self.LAYER_NORM_EPS,
+            batch_first=True,
+            norm_first=norm_first,
+            **config,
+        )
+        self.encoder = nn.ModuleList(
+            [copy.deppcopy(encoder_layer) for _ in range(self.NUM_LAYERS)]
+        )
+        self.register_buffer(
+            "dense_mask",
+            nn.Transformer.generate_square_subsequent_mask(
+                self.CONTEXT_WINDOW, device=device
+            ),
+            persistent=False,
+        )
+        self.register_buffer(
+            "sparse_mask",
+            self.dense_mask
+            + torch.full(
+                (self.CONTEXT_WINDON, self.CONTEX_WINDOW), -torch.inf, **config
+            ).tril_(diagonal=-self.SPARSE_BAND)
+            if alternate_sparse_attn
+            else None,
+            persistent=False,
+        )
+        if final_layer_norm:
+            self.layer_norm = nn.LayerNorm(
+                self.MODEL_DIM, eps=self.LAYER_NORM_EPS, bias=True, **config
+            )
+        else:
+            self.register_parameter("layer_norm", None)
+
+    def forward(self, input):
+        length = input.size(-1)
+        assert length <= self.CONTEXT_WINDOW
+
+        out = self.embedding(input) + self.position_embedding[:length, :]
+        out = self.dropout(out)
+        for i, layer in enumerate(self.encoder):
+            is_sparse = i % 2 == 1 and self.sparse_mask is not None
+            mask = self.sparse_mask if is_sparse else self.dense_mask
+            out = layer(out, src_mask=mask[:length, :length], is_causal=True)
+        if self.layer_norm is not None:
+            out = self.layer_norm(out)
+        out = out @ self.embedding.weight.T
+        return out
+
+    def reset_parameters():
+        pass
+
+
 class GPT1(nn.Module):
     # BPE with 40000 merges
     VOCAB_SIZE = 40478
