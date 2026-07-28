@@ -281,9 +281,9 @@ class GPTBase(nn.Module):
     NUM_HEADS = 12
     DIM_FEEDFORWARD = 4 * MODEL_DIM
     NUM_LAYERS = 12
-    DROPOUT = 0.1
-    LAYER_NORM_EPS = 1e-05
-    SPARSE_BAND = 128
+    DROPOUT = 0.1  # GPT-1 §4.1, GPT-2; GPT-3 never states a dropout rate
+    LAYER_NORM_EPS = 1e-05  # unstated in all three papers; torch/HF default
+    SPARSE_BAND = 128  # GPT-3 §2.1 "locally banded sparse"; width unstated
 
     def __init__(
         self,
@@ -309,7 +309,7 @@ class GPTBase(nn.Module):
             nhead=self.NUM_HEADS,
             dim_feedforward=self.DIM_FEEDFORWARD,
             dropout=self.DROPOUT,
-            activation=nn.functional.gelu,
+            activation=nn.functional.gelu,  # exact erf; OpenAI shipped tanh approx
             layer_norm_eps=self.LAYER_NORM_EPS,
             batch_first=True,
             norm_first=norm_first,
@@ -359,6 +359,7 @@ class GPTBase(nn.Module):
         return out
 
     def reset_parameters(self):
+        # wpe std unstated; 0.02 per HF, OpenAI's released GPT-2 used 0.01
         nn.init.normal_(self.position_embedding, std=0.02)
         for module in self.modules():
             if isinstance(module, nn.Embedding):
@@ -392,6 +393,10 @@ class GPT1(GPTBase):
 class GPT2(GPTBase):
     VOCAB_SIZE = 50257
     CONTEXT_WINDOW = 1024
+    MODEL_DIM = 1600
+    NUM_HEADS = 25
+    DIM_FEEDFORWARD = 4 * MODEL_DIM
+    NUM_LAYERS = 48
 
     def __init__(self, device=None, dtype=None):
         super().__init__(
@@ -408,6 +413,7 @@ class GPT3(GPTBase):
     CONTEXT_WINDOW = 2048
     MODEL_DIM = 12288
     NUM_HEADS = 96
+    DIM_FEEDFORWARD = 4 * MODEL_DIM
     NUM_LAYERS = 96
 
     def __init__(self, device=None, dtype=None):
