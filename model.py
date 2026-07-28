@@ -769,6 +769,17 @@ class PaLM(nn.Module):
                 nn.init.normal_(module.weight, std=1 / math.sqrt(module.in_features))
 
 
+class DeepSeekV1(nn.Module):
+    def __init__(self):
+        pass
+
+    def forward(self):
+        pass
+
+    def reset_parameters():
+        pass
+
+
 class DeepSeekV2(nn.Module):
     def __init__(self):
         pass
@@ -831,5 +842,10 @@ class Qwen3(nn.Module):
 
 
 class Gemma(nn.Module):
+    def __init__(self):
+        pass
+
+
+class Kimi(nn.Module):
     def __init__(self):
         pass
