@@ -1,5 +1,6 @@
 import copy
 import math
+import functools
 import torch
 import torch.nn as nn
 from collections import OrderedDict
@@ -309,7 +310,8 @@ class GPTBase(nn.Module):
             nhead=self.NUM_HEADS,
             dim_feedforward=self.DIM_FEEDFORWARD,
             dropout=self.DROPOUT,
-            activation=nn.functional.gelu,  # exact erf; OpenAI shipped tanh approx
+            # OpenAI shipped tanh approx
+            activation=functools.partial(nn.functional.gelu, approximate="tanh"),
             layer_norm_eps=self.LAYER_NORM_EPS,
             batch_first=True,
             norm_first=norm_first,
