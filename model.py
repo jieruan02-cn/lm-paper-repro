@@ -436,14 +436,22 @@ class LLaMABase(nn.Module):
     NUM_GROUPS = 0
     DIM_FEEDFORWARD = 0
     NUM_LAYERS = 0
+    ROPE_BASE_FREQ = 10000
 
-    def __init__(self, device=None, dtype=None):
+    def __init__(self, rope_scaling=None, device=None, dtype=None):
         super().__init__()
         config = {"device": device, "dtype": dtype}
         self.embedding = nn.Embedding(
             num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
         )
-        self.rope
+        assert self.MODEL_DIM % self.NUM_HEADS == 0
+        self.rope = RoPE(
+            self.MODEL_DIM // self.NUM_HEADS,
+            self.CONTEXT_WINDOW,
+            base_freq=self.ROPE_BASE_FREQ,
+            rope_scaling=rope_scaling,
+            **config,
+        )
         self.encoder = nn.ModuleList(
             [nn.TransformerEncderLayer() for _ in range(self.NUM_LAYERS)]
         )
