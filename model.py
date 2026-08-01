@@ -289,7 +289,6 @@ class GPTBase(nn.Module):
     def __init__(
         self,
         norm_first=False,
-        final_layer_norm=False,
         alternate_sparse_attn=False,
         device=None,
         dtype=None,
@@ -337,7 +336,7 @@ class GPTBase(nn.Module):
             else None,
             persistent=False,
         )
-        if final_layer_norm:
+        if norm_first:
             self.layer_norm = nn.LayerNorm(
                 self.MODEL_DIM, eps=self.LAYER_NORM_EPS, bias=True, **config
             )
@@ -385,7 +384,6 @@ class GPT1(GPTBase):
     def __init__(self, device=None, dtype=None):
         super().__init__(
             norm_first=False,
-            final_layer_norm=False,
             alternate_sparse_attn=False,
             device=device,
             dtype=dtype,
@@ -403,7 +401,6 @@ class GPT2(GPTBase):
     def __init__(self, device=None, dtype=None):
         super().__init__(
             norm_first=True,
-            final_layer_norm=True,
             alternate_sparse_attn=False,
             device=device,
             dtype=dtype,
@@ -421,7 +418,6 @@ class GPT3(GPTBase):
     def __init__(self, device=None, dtype=None):
         super().__init__(
             norm_first=True,
-            final_layer_norm=True,
             alternate_sparse_attn=True,
             device=device,
             dtype=dtype,
