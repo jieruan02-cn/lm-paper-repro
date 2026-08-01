@@ -147,74 +147,6 @@ class RoPEMultiheadAttention(nn.Module):
         return out
 
 
-class RMSTransformerEncoderLayer(nn.Module):
-    def __init__(
-        self,
-        d_model,
-        nhead,
-        ngroup=None,
-        dropout=0.1,
-        rope=nn.Identity(),
-        dim_feedforward=2048,
-        activation=SwishGLU,
-        rms_norm_eps=1e-05,
-        norm_first=True,
-        bias=True,
-        device=None,
-        dtype=None,
-    ):
-        super().__init__()
-        config = {"device": device, "dtype": dtype}
-        self.norm_first = norm_first
-        self.rms_norm1 = nn.RMSNorm(d_model, eps=rms_norm_eps, **config)
-        self.multi_head_attn = RoPEMultiheadAttention(
-            embed_dim=d_model,
-            num_heads=nhead,
-            num_groups=ngroup,
-            dropout=dropout,
-            rope=rope,
-            bias=bias,
-            **config,
-        )
-        self.dropout = nn.Dropout(p=dropout)
-
-        self.rms_norm2 = nn.RMSNorm(d_model, eps=rms_norm_eps, **config)
-        self.ffn = nn.Sequential(
-            OrderedDict(
-                [
-                    (
-                        "up_proj",
-                        nn.Linear(d_model, 2 * dim_feedforward, bias, **config),
-                    ),
-                    ("act", activation()),
-                    ("dropout1", nn.Dropout(p=dropout)),
-                    ("down_proj", nn.Linear(dim_feedforward, d_model, bias, **config)),
-                    ("dropout2", nn.Dropout(p=dropout)),
-                ]
-            )
-        )
-
-    def forward(self, src, src_mask=None, is_causal=False):
-        if self.norm_first:
-            mha_in = self.rms_norm1(src)
-            mha_out = self.multi_head_attn(
-                query=mha_in,
-                key=mha_in,
-                value=mha_in,
-                attn_mask=src_mask,
-                is_causal=is_causal,
-            )
-            out = src + self.dropout(mha_out)
-            out = out + self.ffn(self.rms_norm2(out))
-        else:
-            mha_out = self.multi_head_attn(
-                query=src, key=src, value=src, attn_mask=src_mask, is_causal=is_causal
-            )
-            out = self.rms_norm1(src + self.dropout(mha_out))
-            out = self.rms_norm2(out + self.ffn(out))
-        return out
-
-
 class LNParallelTransformerEncoderLayer(nn.Module):
     def __init__(
         self,
@@ -424,15 +356,104 @@ class GPT3(GPTBase):
         )
 
 
+class TransformerFFNBlock(nn.Module):
+    def __init__(
+        self,
+        d_model,
+        dim_feedforward,
+        bias=False,
+        activation=nn.ReLU,
+        dropout=0.0,
+        dim_feedforward1=None,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.linear1 = nn.Linear(
+            d_model,
+            dim_feedforward1 if dim_feedforward1 else dim_feedforward,
+            bias=bias,
+            **config,
+        )
+        self.activation = activation()
+        self.dropout1 = nn.Dropout(p=dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model, bias=bias, **config)
+        self.dropout2 = nn.Dropout(p=dropout)
+
+    def forward(self, input):
+        out = self.linear1(input)
+        out = self.activation(out)
+        out = self.dropout1(out)
+        out = self.linear2(out)
+        out = self.dropout2(out)
+        return out
+
+
+class LLaMADecoderLayer(nn.Module):
+    BIAS = False
+    ACTIVATION = SwishGLU
+    DROPOUT = 0.0
+
+    def __init__(
+        self,
+        d_model,
+        nhead,
+        ngroup=None,
+        rope=nn.Identity(),
+        dim_feedforward=2048,
+        rms_norm_eps=1e-05,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.rms_norm1 = nn.RMSNorm(d_model, eps=rms_norm_eps, **config)
+        self.multi_head_attn = RoPEMultiheadAttention(
+            embed_dim=d_model,
+            num_heads=nhead,
+            num_groups=ngroup,
+            rope=rope,
+            bias=self.BIAS,
+            **config,
+        )
+
+        self.rms_norm2 = nn.RMSNorm(d_model, eps=rms_norm_eps, **config)
+        self.ffn = TransformerFFNBlock(
+            d_model=d_model,
+            dim_feedforward=dim_feedforward,
+            bias=self.BIAS,
+            activation=self.ACTIVATION,
+            dropout=self.DROPOUT,
+            dim_feedforward1=2 * dim_feedforward,
+            **config,
+        )
+
+    def forward(self, input, attn_mask=None, is_causal=False):
+        mha_in = self.rms_norm1(input)
+        out = input + self.multi_head_attn(
+            query=mha_in,
+            key=mha_in,
+            value=mha_in,
+            attn_mask=attn_mask,
+            is_causal=is_causal,
+        )
+        out = out + self.ffn(self.rms_norm2(out))
+        return out
+
+
 class LLaMABase(nn.Module):
-    VOCAB_SIZE = 0
-    CONTEXT_WINDOW = 0
-    MODEL_DIM = 0
-    NUM_HEADS = 0
-    NUM_GROUPS = 0
-    DIM_FEEDFORWARD = 0
-    NUM_LAYERS = 0
+    VOCAB_SIZE = 32000
+    CONTEXT_WINDOW = 2048
+    MODEL_DIM = 8192
+    NUM_HEADS = 64
+    NUM_GROUPS = None
+    # 8 * MODEL_DIM // 3 = 21845 is paper value, round to multiple of 256 for hardware
+    # efficiency.
+    DIM_FEEDFORWARD = 22016
+    NUM_LAYERS = 80
     ROPE_BASE_FREQ = 10000
+    RMS_NORM_EPS = 1e-05
 
     def __init__(self, rope_scaling=None, device=None, dtype=None):
         super().__init__()
@@ -448,71 +469,23 @@ class LLaMABase(nn.Module):
             rope_scaling=rope_scaling,
             **config,
         )
-        self.encoder = nn.ModuleList(
-            [nn.TransformerEncderLayer() for _ in range(self.NUM_LAYERS)]
-        )
-        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
-        self.unembedding = nn.Linear(
-            in_features=self.MODEL_DIM,
-            out_features=self.VOCAB_SIZE,
-            bias=False,
-            **config,
-        )
-        self.reset_parameters()
-
-    def forward(self, input):
-        out = self.embedding(input)
-        for layer in self.encoder:
-            out = layer(out, is_causal=True)
-        out = self.layer_norm(out)
-        out = self.unembedding(out)
-        return out
-
-    def reset_parameters(self):
-        pass
-
-
-class LLaMA1(nn.Module):
-    VOCAB_SIZE = 32000
-    CONTEXT_WINDOW = 2048
-    MODEL_DIM = 8192
-    NUM_HEADS = 64
-    # 8 * MODEL_DIM // 3 = 21845 is paper value, round to multiple of 256 for hardware
-    # efficiency.
-    DIM_FEEDFORWARD = 22016
-    NUM_LAYERS = 80
-
-    def __init__(self, device=None, dtype=None):
-        super().__init__()
-        config = {"device": device, "dtype": dtype}
-        self.embedding = nn.Embedding(
-            num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
-        )
-        assert self.MODEL_DIM % self.NUM_HEADS == 0
-        self.rope = RoPE(
-            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, **config
-        )
         # avoid deepcopy with self.rope otherwise it duplicate the rope again.
         self.encoder = nn.ModuleList(
             [
-                RMSTransformerEncoderLayer(
+                LLaMADecoderLayer(
                     d_model=self.MODEL_DIM,
                     nhead=self.NUM_HEADS,
-                    ngroup=None,
-                    dropout=0.0,
+                    ngroup=self.NUM_GROUPS,
                     rope=self.rope,
                     dim_feedforward=self.DIM_FEEDFORWARD,
-                    activation=SwishGLU,
-                    rms_norm_eps=1e-05,
-                    norm_first=True,
-                    bias=False,
+                    rms_norm_eps=self.RMS_NORM_EPS,
                     **config,
                 )
                 for _ in range(self.NUM_LAYERS)
-            ],
+            ]
         )
-        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
-        self.linear = nn.Linear(
+        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=self.RMS_NORM_EPS, **config)
+        self.unembedding = nn.Linear(
             in_features=self.MODEL_DIM,
             out_features=self.VOCAB_SIZE,
             bias=False,
@@ -525,145 +498,9 @@ class LLaMA1(nn.Module):
         for layer in self.encoder:
             # don't use buffer mask and instead relies on SDPA's optimized version,
             # otherwise will OOM for large context window.
-            out = layer(src=out, is_causal=True)
-        out = self.linear(self.rms_norm(out))
-        return out
-
-    def reset_parameters(self):
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, std=0.02)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Embedding):
-                nn.init.normal_(module.weight, std=0.02)
-
-        res_layer_scaler = 1.0 / math.sqrt(2 * self.NUM_LAYERS)
-        for layer in self.encoder:
-            nn.init.normal_(
-                layer.multi_head_attn.out_proj.weight, std=0.02 * res_layer_scaler
-            )
-            nn.init.normal_(layer.ffn.down_proj.weight, std=0.02 * res_layer_scaler)
-
-
-# Main difference from LLaMA1 is context window and usage of GQA.
-class LLaMA2(nn.Module):
-    VOCAB_SIZE = 32000
-    CONTEXT_WINDOW = 4096
-    MODEL_DIM = 8192
-    NUM_HEADS = 64
-    NUM_GROUPS = 8
-    # scale the dim_feedforward by 1.33, MODEL_DIM * 8 / 3 * 1.33
-    DIM_FEEDFORWARD = 28672
-    NUM_LAYERS = 80
-
-    def __init__(self, device=None, dtype=None):
-        super().__init__()
-        config = {"device": device, "dtype": dtype}
-        self.embedding = nn.Embedding(
-            num_embeddings=self.VOCAB_SIZE, embedding_dim=self.MODEL_DIM, **config
-        )
-        assert self.MODEL_DIM % self.NUM_HEADS == 0
-        self.rope = RoPE(
-            self.MODEL_DIM // self.NUM_HEADS, self.CONTEXT_WINDOW, **config
-        )
-        self.encoder = nn.ModuleList(
-            [
-                RMSTransformerEncoderLayer(
-                    d_model=self.MODEL_DIM,
-                    nhead=self.NUM_HEADS,
-                    ngroup=self.NUM_GROUPS,
-                    dropout=0.0,
-                    rope=self.rope,
-                    dim_feedforward=self.DIM_FEEDFORWARD,
-                    activation=SwishGLU,
-                    rms_norm_eps=1e-05,
-                    norm_first=True,
-                    bias=False,
-                    **config,
-                )
-                for _ in range(self.NUM_LAYERS)
-            ]
-        )
-        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
-        self.linear = nn.Linear(
-            in_features=self.MODEL_DIM,
-            out_features=self.VOCAB_SIZE,
-            bias=False,
-            **config,
-        )
-        self.reset_parameters()
-
-    def forward(self, input):
-        out = self.embedding(input)
-        for layer in self.encoder:
-            out = layer(src=out, is_causal=True)
-        out = self.linear(self.rms_norm(out))
-        return out
-
-    def reset_parameters(self):
-        for module in self.modules():
-            if isinstance(module, nn.Embedding):
-                nn.init.normal_(module.weight, std=0.02)
-            elif isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, std=0.02)
-
-        res_layer_scaler = 1.0 / math.sqrt(2 * self.NUM_LAYERS)
-        for layer in self.encoder:
-            nn.init.normal_(
-                layer.multi_head_attn.out_proj.weight, std=0.02 * res_layer_scaler
-            )
-            nn.init.normal_(layer.ffn.down_proj.weight, std=0.02 * res_layer_scaler)
-
-
-class LLaMA3(nn.Module):
-    VOCAB_SIZE = 128256
-    CONTEXT_WINDOW = 131072
-    MODEL_DIM = 16384
-    NUM_HEADS = 128
-    NUM_GROUPS = 8
-    DIM_FEEDFORWARD = 53248
-    NUM_LAYERS = 126
-
-    def __init__(self, device=None, dtype=None):
-        super().__init__()
-        config = {"device": device, "dtype": dtype}
-        self.embedding = nn.Embedding(self.VOCAB_SIZE, self.MODEL_DIM, **config)
-        assert self.MODEL_DIM % self.NUM_HEADS == 0
-        self.rope = RoPE(
-            self.MODEL_DIM // self.NUM_HEADS,
-            self.CONTEXT_WINDOW,
-            base_freq=500000.0,
-            rope_scaling=LLaMA3.rope_scaling,
-            **config,
-        )
-        self.encoder = nn.ModuleList(
-            [
-                RMSTransformerEncoderLayer(
-                    d_model=self.MODEL_DIM,
-                    nhead=self.NUM_HEADS,
-                    ngroup=self.NUM_GROUPS,
-                    dropout=0.0,
-                    rope=self.rope,
-                    dim_feedforward=self.DIM_FEEDFORWARD,
-                    activation=SwishGLU,
-                    rms_norm_eps=1e-05,
-                    norm_first=True,
-                    bias=False,
-                    **config,
-                )
-                for _ in range(self.NUM_LAYERS)
-            ]
-        )
-        self.rms_norm = nn.RMSNorm(self.MODEL_DIM, eps=1e-05, **config)
-        self.linear = nn.Linear(self.MODEL_DIM, self.VOCAB_SIZE, bias=False, **config)
-        self.reset_parameters()
-
-    def forward(self, input):
-        out = self.embedding(input)
-        for layer in self.encoder:
-            out = layer(src=out, is_causal=True)
-        out = self.linear(self.rms_norm(out))
+            out = layer(out, is_causal=True)
+        out = self.rms_norm(out)
+        out = self.unembedding(out)
         return out
 
     def reset_parameters(self):
@@ -671,12 +508,38 @@ class LLaMA3(nn.Module):
             if isinstance(module, nn.Embedding) or isinstance(module, nn.Linear):
                 nn.init.normal_(module.weight, std=0.02)
 
-        res_layer_scaler = 1.0 / math.sqrt(2.0 * self.NUM_LAYERS)
+        res_out_std = 0.02 / math.sqrt(2 * self.NUM_LAYERS)
         for layer in self.encoder:
-            nn.init.normal_(
-                layer.multi_head_attn.out_proj.weight, std=0.02 * res_layer_scaler
-            )
-            nn.init.normal_(layer.ffn.down_proj.weight, std=0.02 * res_layer_scaler)
+            nn.init.normal_(layer.multi_head_attn.out_proj.weight, std=res_out_std)
+            nn.init.normal_(layer.ffn.linear2.weight, std=res_out_std)
+
+
+class LLaMA1(LLaMABase):
+    def __init__(self, device=None, dtype=None):
+        super().__init__(rope_scaling=None, device=device, dtype=dtype)
+
+
+class LLaMA2(LLaMABase):
+    CONTEXT_WINDOW = 4096
+    NUM_GROUPS = 8
+    DIM_FEEDFORWARD = 28672  # scale LLaMA1's by 1.33, MODEL_DIM * 8 / 3 * 1.33
+
+    def __init__(self, device=None, dtype=None):
+        super().__init__(rope_scaling=None, device=device, dtype=dtype)
+
+
+class LLaMA3(LLaMABase):
+    VOCAB_SIZE = 128256
+    CONTEXT_WINDOW = 131072
+    MODEL_DIM = 16384
+    NUM_HEADS = 128
+    NUM_GROUPS = 8
+    DIM_FEEDFORWARD = 53248
+    NUM_LAYERS = 126
+    ROPE_BASE_FREQ = 500000.0
+
+    def __init__(self, device=None, dtype=None):
+        super().__init__(rope_scaling=self.rope_scaling, device=device, dtype=dtype)
 
     @staticmethod
     def rope_scaling(theta):
