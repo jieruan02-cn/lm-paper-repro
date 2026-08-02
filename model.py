@@ -147,56 +147,6 @@ class RoPEMultiheadAttention(nn.Module):
         return out
 
 
-class LNParallelTransformerEncoderLayer(nn.Module):
-    def __init__(
-        self,
-        d_model,
-        nhead,
-        d_head=None,
-        ngroup=None,
-        dropout=0.0,
-        rope=nn.Identity(),
-        dim_feedforward=2048,
-        activation=SwishGLU,
-        layer_norm_eps=1e-05,
-        bias=False,
-        device=None,
-        dtype=None,
-    ):
-        super().__init__()
-        config = {"device": device, "dtype": dtype}
-        self.layer_norm = nn.LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **config)
-        self.multi_head_attn = RoPEMultiheadAttention(
-            embed_dim=d_model,
-            num_heads=nhead,
-            d_head=d_head,
-            num_groups=ngroup,
-            dropout=dropout,
-            rope=rope,
-            bias=bias,
-            **config,
-        )
-        self.dropout = nn.Dropout(p=dropout)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, 2 * dim_feedforward, bias=bias, **config),
-            activation(),
-            nn.Dropout(p=dropout),
-            nn.Linear(dim_feedforward, d_model, bias=bias, **config),
-            nn.Dropout(p=dropout),
-        )
-
-    def forward(self, input, is_causal=True):
-        normed_input = self.layer_norm(input)
-        mha_out = self.multi_head_attn(
-            query=normed_input,
-            key=normed_input,
-            value=normed_input,
-            is_causal=is_causal,
-        )
-        out = input + self.dropout(mha_out) + self.ffn(normed_input)
-        return out
-
-
 class T5(nn.Module):
     def __init__(self):
         pass
@@ -430,13 +380,12 @@ class LLaMADecoderLayer(nn.Module):
             **config,
         )
 
-    def forward(self, input, attn_mask=None, is_causal=False):
+    def forward(self, input, is_causal):
         mha_in = self.rms_norm1(input)
         out = input + self.multi_head_attn(
             query=mha_in,
             key=mha_in,
             value=mha_in,
-            attn_mask=attn_mask,
             is_causal=is_causal,
         )
         out = out + self.ffn(self.rms_norm2(out))
@@ -560,6 +509,59 @@ class LLaMA3(LLaMABase):
         return scaled_theta
 
 
+class PaLMDecoderLayer(nn.Module):
+    NUM_GROUPS = 1
+    DROPOUT = 0.0
+    ACTIVATION = SwishGLU
+
+    def __init__(
+        self,
+        d_model,
+        nhead,
+        d_head,
+        bias,
+        rope,
+        dim_feedforward,
+        layer_norm_eps,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.layer_norm = nn.LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **config)
+        self.multi_head_attn = RoPEMultiheadAttention(
+            embed_dim=d_model,
+            num_heads=nhead,
+            d_head=d_head,
+            num_groups=self.NUM_GROUPS,
+            dropout=self.DROPOUT,
+            rope=rope,
+            bias=bias,
+            **config,
+        )
+        self.dropout = nn.Dropout(p=self.DROPOUT)
+        self.ffn = TransformerFFNBlock(
+            d_model=d_model,
+            dim_feedforward=dim_feedforward,
+            bias=bias,
+            activation=self.ACTIVATION,
+            dropout=self.DROPOUT,
+            dim_feedforward1=2 * dim_feedforward,
+            **config,
+        )
+
+    def forward(self, input, is_causal):
+        normed_input = self.layer_norm(input)
+        mha_out = self.multi_head_attn(
+            query=normed_input,
+            key=normed_input,
+            value=normed_input,
+            is_causal=is_causal,
+        )
+        out = input + self.dropout(mha_out) + self.ffn(normed_input)
+        return out
+
+
 class PaLM(nn.Module):
     VOCAB_SIZE = 256000
     CONTEXT_WINDOW = 2048
@@ -568,6 +570,8 @@ class PaLM(nn.Module):
     NUM_HEADS = 48
     DIM_FEEDFORWARD = 4 * MODEL_DIM
     NUM_LAYERS = 118
+    BIAS = False
+    LN_EPS = 1e-05
 
     def __init__(self, device=None, dtype=None):
         super().__init__()
@@ -578,23 +582,22 @@ class PaLM(nn.Module):
         self.rope = RoPE(self.HEAD_DIM, self.CONTEXT_WINDOW, **config)
         self.encoder = nn.ModuleList(
             [
-                LNParallelTransformerEncoderLayer(
+                PaLMDecoderLayer(
                     d_model=self.MODEL_DIM,
                     nhead=self.NUM_HEADS,
                     d_head=self.HEAD_DIM,
-                    ngroup=1,
-                    dropout=0.0,
+                    bias=self.BIAS,
                     rope=self.rope,
                     dim_feedforward=self.DIM_FEEDFORWARD,
-                    activation=SwishGLU,
-                    layer_norm_eps=1e-05,
-                    bias=False,
+                    layer_norm_eps=self.LN_EPS,
                     **config,
                 )
                 for _ in range(self.NUM_LAYERS)
             ]
         )
-        self.layer_norm = nn.LayerNorm(self.MODEL_DIM, eps=1e-05, bias=False, **config)
+        self.layer_norm = nn.LayerNorm(
+            self.MODEL_DIM, eps=self.LN_EPS, bias=self.BIAS, **config
+        )
         self.reset_parameters()
 
     def forward(self, input):
