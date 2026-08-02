@@ -616,15 +616,21 @@ class PaLM(nn.Module):
                 nn.init.normal_(module.weight, std=1 / math.sqrt(module.in_features))
 
 
-class DeepSeekV1(nn.Module):
-    def __init__(self):
-        pass
+class DeepSeekV1(LLaMABase):
+    VOCAB_SIZE = 102400
+    CONTEXT_WINDOW = 4096
+    NUM_GROUPS = 8
+    NUM_LAYERS = 95
+    RMS_NORM_EPS = 1e-06
+    INIT_STD = 0.006
 
-    def forward(self):
-        pass
+    def __init__(self, device=None, dtype=None):
+        super().__init__(device=device, dtype=dtype)
 
-    def reset_parameters():
-        pass
+    def reset_parameters(self):
+        for module in self.modules():
+            if isinstance(module, nn.Embedding) or isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, std=self.INIT_STD)
 
 
 class DeepSeekV2(nn.Module):
