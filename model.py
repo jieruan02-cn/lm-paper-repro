@@ -1,9 +1,9 @@
+# TODO(jieruan): Adapt the models for KV-cached inference mode.
 import copy
 import math
 import functools
 import torch
 import torch.nn as nn
-from collections import OrderedDict
 
 
 class SwishGLU(nn.Module):
