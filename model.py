@@ -633,6 +633,14 @@ class DeepSeekV1(LLaMABase):
                 nn.init.normal_(module.weight, std=self.INIT_STD)
 
 
+class MultiheadLatentAttention(nn.Module):
+    def __init__(self):
+        pass
+
+    def forward(self, query, key, value, attn_mask=None, is_causal=False):
+        pass
+
+
 class DeepSeekV2(nn.Module):
     def __init__(self):
         pass
